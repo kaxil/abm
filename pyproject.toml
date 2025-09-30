@@ -1,0 +1,101 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "mypy>=1.0",
+    "ruff>=0.1.0",
+    "prek>=0.2.0",
+    "types-docker>=7.0.0",
+]
+
+[project]
+name = "airflow-breeze-manager"
+version = "0.1.0"
+description = "Manage multiple Airflow development environments with isolated breeze instances"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "Kaxil Naik", email = "kaxilnaik@apache.org" }
+]
+keywords = [
+    "airflow",
+    "apache-airflow",
+    "breeze",
+    "development",
+    "worktree",
+    "git",
+    "docker",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: Software Development :: Version Control :: Git",
+]
+dependencies = [
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "docker>=6.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/kaxil/abm"
+Repository = "https://github.com/kaxil/abm"
+Documentation = "https://github.com/kaxil/abm#readme"
+"Bug Tracker" = "https://github.com/kaxil/abm/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "mypy>=1.0",
+    "ruff>=0.1.0",
+    "prek>=0.2.0",
+    "types-docker>=7.0.0",
+]
+
+[project.scripts]
+abm = "airflow_breeze_manager.cli:app"
+airflow-breeze-manager = "airflow_breeze_manager.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/airflow_breeze_manager"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "UP", # pyupgrade
+]
+ignore = [
+    "E501",  # Line too long (handled by formatter)
+]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
