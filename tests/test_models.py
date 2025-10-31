@@ -202,3 +202,37 @@ def test_global_config_load_corrupted(tmp_path) -> None:
 
     loaded = GlobalConfig.load(config_file)
     assert loaded is None  # Should return None for corrupted file
+
+
+def test_project_metadata_migration_managed_worktree() -> None:
+    """Test migration adds managed_worktree field for old projects."""
+
+    from airflow_breeze_manager.models import ProjectMetadata
+
+    # Simulate old project metadata without managed_worktree field
+    old_data = {
+        "name": "old-project",
+        "branch": "feature/old",
+        "worktree_path": "/tmp/old",
+        "ports": {
+            "webserver": 28180,
+            "flower": 25655,
+            "postgres": 25533,
+            "mysql": 23406,
+            "redis": 26479,
+            "ssh": 12422,
+        },
+        "description": "Old project without managed_worktree field",
+        "backend": "sqlite",
+        "python_version": "3.11",
+        "created_at": "2025-01-01T00:00:00",
+        "frozen": False,
+        # Note: managed_worktree is missing
+    }
+
+    # Load from dict (should add managed_worktree=True via migration)
+    project = ProjectMetadata.from_dict(old_data)
+
+    assert project.managed_worktree is True  # Should default to True for old projects
+    assert project.name == "old-project"
+    assert project.branch == "feature/old"

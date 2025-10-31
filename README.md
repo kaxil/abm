@@ -255,6 +255,83 @@ Options:
   --create-branch            Create new branch if it doesn't exist
 ```
 
+#### `abm adopt <worktree_path>`
+
+Adopt an existing git worktree into ABM management.
+
+```bash
+abm adopt <worktree_path> [OPTIONS]
+
+Options:
+  -n, --name TEXT            Project name (defaults to branch name)
+  -d, --description TEXT     Project description
+  --backend TEXT             Database backend (default: sqlite)
+  --python-version TEXT      Python version (default: 3.11)
+```
+
+**Use cases:**
+- Import worktrees created manually or by other tools
+- Manage existing development branches with ABM
+- Migrate from manual worktree management to ABM
+
+**Key features:**
+- Validates worktree belongs to configured Airflow repository
+- Idempotent - safe to run multiple times on the same worktree
+- Automatically sanitizes branch names (e.g., `feature/foo` → `feature-foo`)
+- Worktree is marked as "adopted" and protected from accidental removal
+
+**Example:**
+```bash
+# You manually created a worktree
+git worktree add ~/worktrees/my-feature feature-branch
+
+# Now adopt it into ABM
+abm adopt ~/worktrees/my-feature
+
+# ABM will:
+# - Detect the branch name (feature-branch)
+# - Create project metadata
+# - Allocate ports
+# - Set up PROJECT.md and CLAUDE.md
+# - Mark it as adopted (protected from removal)
+```
+
+#### `abm disown [project]`
+
+Remove ABM management but keep the worktree.
+
+```bash
+abm disown [project] [OPTIONS]
+
+Options:
+  -f, --force              Skip confirmation
+```
+
+**Use cases:**
+- Stop managing a worktree with ABM but keep it for manual use
+- Clean up ABM metadata while preserving your work
+- Prepare a worktree for management by another tool
+
+**What gets removed:**
+- ABM project metadata
+- Symlinks (PROJECT.md, CLAUDE.md)
+- Breeze configuration
+- Docker containers
+
+**What gets preserved:**
+- The git worktree itself
+- All your code changes
+- Git branch
+
+**Example:**
+```bash
+# Disown a project
+abm disown my-feature --force
+
+# The worktree at ~/worktrees/my-feature still exists
+# You can now manage it manually or re-adopt it later
+```
+
 #### `abm list`
 
 List all projects with their status.
@@ -339,17 +416,37 @@ abm run my-feature mypy providers/amazon/
 Remove a project and clean up resources (stops containers, removes worktree and metadata).
 
 ```bash
-abm remove <project> [--keep-docs] [--force]
+abm remove <project> [--keep-docs] [--force] [--delete-branch]
 
 Options:
-  --keep-docs    Keep PROJECT.md file
-  -f, --force    Skip confirmation
+  --keep-docs       Keep PROJECT.md file
+  --delete-branch   Delete the git branch (WARNING: destructive)
+  -f, --force       Skip confirmation & allow removing adopted projects
 ```
 
 **What it does:**
 1. Stops and removes all Docker containers for this project
 2. Removes the git worktree
 3. Deletes project metadata (or keeps only PROJECT.md if `--keep-docs`)
+
+**Protection for adopted projects:**
+- Adopted projects (created with `abm adopt`) require `--force` to remove
+- This prevents accidental deletion of worktrees you didn't create with ABM
+- Use `abm disown` if you want to keep the worktree but remove ABM management
+
+**Example:**
+```bash
+# Remove a managed project (created with abm add)
+abm remove my-feature
+
+# Try to remove an adopted project (will fail without --force)
+abm remove adopted-feature
+# Error: Cannot remove adopted project 'adopted-feature' without --force
+# Hint: Use 'abm disown' to keep the worktree
+
+# Force remove an adopted project
+abm remove adopted-feature --force
+```
 
 ### Docker Commands
 

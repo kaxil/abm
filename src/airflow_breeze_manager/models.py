@@ -60,6 +60,7 @@ class ProjectMetadata:
     python_version: str = "3.11"
     created_at: str = ""
     frozen: bool = False
+    managed_worktree: bool = True  # True if ABM created the worktree, False if adopted
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -71,6 +72,10 @@ class ProjectMetadata:
     def from_dict(cls, data: dict[str, Any]) -> ProjectMetadata:
         """Create from dictionary."""
         ports_data = data.pop("ports")
+
+        # Migration: Add managed_worktree if missing (for old projects created before adopt/disown feature)
+        if "managed_worktree" not in data:
+            data["managed_worktree"] = True  # Existing projects were all created by ABM
 
         # Migration: Add SSH port if missing (for old projects created before v0.1.1)
         if "ssh" not in ports_data:

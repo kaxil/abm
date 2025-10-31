@@ -32,7 +32,17 @@ This file provides guidance to Claude Code when working with this repository.
    - Project folder in `~/.airflow-breeze-manager/projects/project/`
    - Allocates unique ports
    - Creates PROJECT.md and symlinks to worktree
-3. User runs `abm shell project` → Sets environment variables and runs `breeze shell`
+   - Sets `managed_worktree=True` (ABM created the worktree)
+3. User runs `abm adopt /path/to/worktree` → Adopts existing worktree:
+   - Validates worktree is from configured Airflow repo
+   - Creates project metadata with `managed_worktree=False`
+   - Allocates ports and creates symlinks
+   - Worktree is protected from removal (requires --force)
+4. User runs `abm shell project` → Sets environment variables and runs `breeze shell`
+5. User runs `abm disown project` → Removes ABM management but keeps worktree:
+   - Removes project metadata and symlinks
+   - Stops containers
+   - Worktree directory remains untouched
 
 ### Port Allocation
 

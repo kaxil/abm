@@ -35,8 +35,10 @@ from airflow_breeze_manager.utils import (
     git_branch_exists,
     git_worktree_exists,
     remove_symlinks,
+    resolve_project_from_path,
     run_command,
     stop_project_containers,
+    validate_airflow_worktree,
 )
 
 app = typer.Typer(
@@ -390,6 +392,222 @@ fi
 
 
 @app.command()
+def adopt(
+    worktree_path: Annotated[str, typer.Argument(help="Path to existing worktree to adopt")],
+    name: Annotated[
+        str | None,
+        typer.Option("--name", "-n", help="Project name (defaults to branch name)"),
+    ] = None,
+    description: Annotated[
+        str | None,
+        typer.Option("--description", "-d", help="Project description"),
+    ] = None,
+    backend: Annotated[
+        str,
+        typer.Option(help="Database backend"),
+    ] = "sqlite",
+    python_version: Annotated[
+        str,
+        typer.Option(help="Python version"),
+    ] = "3.11",
+) -> None:
+    """Adopt an existing worktree into ABM management.
+
+    This allows you to import worktrees created manually or by other tools
+    into ABM. The worktree must be from the configured Airflow repository.
+
+    The command is idempotent - running it multiple times on the same worktree
+    will not cause errors.
+    """
+    config = get_config()
+    worktree = Path(worktree_path).resolve()
+
+    # Validate worktree belongs to configured Airflow repo
+    is_valid, branch, error_msg = validate_airflow_worktree(worktree, Path(config.airflow_repo))
+    if not is_valid:
+        console.print(f"[red]Invalid worktree: {error_msg}[/red]")
+        raise typer.Exit(1)
+
+    # Check if already managed by ABM (idempotent behavior)
+    existing_project = resolve_project_from_path(worktree)
+    if existing_project:
+        console.print(f"[yellow]Worktree is already managed as project '{existing_project}'[/yellow]")
+        console.print("[dim]Nothing to do (idempotent)[/dim]")
+        return
+
+    # Determine project name
+    project_name = name or branch
+    project_name = project_name.replace("/", "-")  # Sanitize branch names like "feature/foo"
+
+    # Check if project name already exists
+    if get_project(project_name):
+        console.print(f"[red]Project '{project_name}' already exists.[/red]")
+        console.print("[yellow]Hint: Use --name to specify a different project name[/yellow]")
+        raise typer.Exit(1)
+
+    # Allocate ports
+    console.print(f"Adopting worktree: {worktree}")
+    console.print(f"Branch: {branch}")
+    console.print(f"Project name: {project_name}")
+    ports = allocate_ports()
+
+    # Create project directory
+    project_dir = PROJECTS_DIR / project_name
+    project_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create project metadata with managed_worktree=False
+    project = ProjectMetadata(
+        name=project_name,
+        branch=branch,
+        worktree_path=str(worktree),
+        ports=ports,
+        description=description or f"Adopted Airflow development for {branch}",
+        backend=backend,
+        python_version=python_version,
+        created_at=datetime.now().isoformat(),
+        managed_worktree=False,  # This is the key difference from 'add'
+    )
+    project.save(project_dir)
+
+    # Create PROJECT.md template
+    project_md = project_dir / "PROJECT.md"
+    if not project_md.exists():
+        project_md.write_text(f"""# {project_name}
+
+## Description
+{project.description}
+
+## Branch
+`{branch}`
+
+## Ports
+- Webserver: {ports.webserver}
+- Flower: {ports.flower}
+- Postgres: {ports.postgres}
+- MySQL: {ports.mysql}
+- Redis: {ports.redis}
+- SSH: {ports.ssh}
+
+## Notes
+Add your notes here...
+""")
+
+    # Create CLAUDE.md template for AI assistant context
+    claude_md = project_dir / "CLAUDE.md"
+    if not claude_md.exists():
+        claude_md.write_text(f"""# Project Context for AI Assistants
+
+## Project: {project_name}
+
+### Branch
+`{branch}`
+
+### Description
+{project.description}
+
+### Development Environment
+- **Python**: {python_version}
+- **Backend**: {backend}
+- **Webserver**: http://localhost:{ports.webserver}
+
+### What I'm Working On
+<!-- Add context about what you're building, the problem you're solving, etc. -->
+
+
+### Key Files/Areas
+<!-- List the main files or directories relevant to this work -->
+
+
+### Testing Strategy
+<!-- How to test the changes -->
+
+
+### Notes & Decisions
+<!-- Important decisions, gotchas, things to remember -->
+
+
+### Related Issues/PRs
+<!-- Links to related GitHub issues, discussions, etc. -->
+
+""")
+
+    # Create Breeze environment config for passing env vars into container
+    breeze_config_dir = worktree / "files" / "airflow-breeze-config"
+    breeze_config_dir.mkdir(parents=True, exist_ok=True)
+
+    env_file = breeze_config_dir / "environment_variables.env"
+    env_vars = []
+
+    # Set instance name for UI identification
+    env_vars.append(f'AIRFLOW__API__INSTANCE_NAME="ABM: {project_name}"')
+
+    # Use project-specific database name for Postgres/MySQL isolation
+    if backend in ("postgres", "mysql"):
+        # Sanitize project name for database naming (replace hyphens with underscores)
+        db_name = f"airflow_{project_name.replace('-', '_')}"
+        env_vars.append("# Database isolation - each project gets its own database")
+        env_vars.append(f"ABM_DB_NAME={db_name}")
+        if backend == "postgres":
+            env_vars.append(
+                f"AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:airflow@postgres/{db_name}"
+            )
+            env_vars.append(f"AIRFLOW__CELERY__RESULT_BACKEND=db+postgresql://postgres:airflow@postgres/{db_name}")
+        else:  # mysql
+            env_vars.append(f"AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=mysql://root@mysql:3306/{db_name}")
+            env_vars.append(f"AIRFLOW__CELERY__RESULT_BACKEND=db+mysql://root@mysql:3306/{db_name}")
+
+    env_file.write_text("\n".join(env_vars) + "\n")
+
+    # Create init script to create database if it doesn't exist
+    if backend in ("postgres", "mysql"):
+        init_script = breeze_config_dir / "init.sh"
+        if backend == "postgres":
+            script_content = f"""#!/bin/bash
+# Create database if it doesn't exist
+if [ "${{BACKEND}}" = "postgres" ]; then
+    echo "Ensuring database '{db_name}' exists..."
+    PGPASSWORD=airflow psql -h postgres -U postgres -tc "SELECT 1 FROM pg_database WHERE datname = '{db_name}'" | grep -q 1 || {{
+        echo "Creating database '{db_name}'..."
+        PGPASSWORD=airflow psql -h postgres -U postgres -c "CREATE DATABASE {db_name};"
+    }}
+fi
+"""
+        else:  # mysql
+            script_content = f"""#!/bin/bash
+# Create database if it doesn't exist
+if [ "${{BACKEND}}" = "mysql" ]; then
+    echo "Ensuring database '{db_name}' exists..."
+    mysql -h mysql -u root -e "CREATE DATABASE IF NOT EXISTS {db_name};"
+fi
+"""
+        init_script.write_text(script_content)
+        init_script.chmod(0o755)
+
+    # Create symlinks for ABM-managed files
+    create_symlinks(project_dir, worktree, SYMLINKED_FILES)
+
+    # Create .cursor symlink to main Airflow repo (if it exists)
+    airflow_cursor_dir = Path(config.airflow_repo) / ".cursor"
+    worktree_cursor_link = worktree / ".cursor"
+
+    if airflow_cursor_dir.exists():
+        if worktree_cursor_link.exists() and not worktree_cursor_link.is_symlink():
+            console.print("[yellow]Warning: .cursor exists as a directory, not creating symlink[/yellow]")
+        elif worktree_cursor_link.is_symlink():
+            worktree_cursor_link.unlink()
+            worktree_cursor_link.symlink_to(airflow_cursor_dir)
+        else:
+            worktree_cursor_link.symlink_to(airflow_cursor_dir)
+            console.print(f"[dim]→ Created .cursor symlink to {airflow_cursor_dir}[/dim]")
+
+    console.print(f"✅ [green]Worktree adopted as project '{project_name}'![/green]")
+    console.print(f"   Branch: {branch}")
+    console.print(f"   Worktree: {worktree}")
+    console.print(f"   Webserver: http://localhost:{ports.webserver}")
+    console.print("[dim]Note: Worktree was not created by ABM and will be protected from removal[/dim]")
+
+
+@app.command()
 def list() -> None:
     """List all projects."""
     projects = get_all_projects()
@@ -552,6 +770,18 @@ def remove(
     project, project_dir = require_project(project_name)
     config = get_config()
 
+    # Protect adopted worktrees from accidental removal
+    if not project.managed_worktree and not force:
+        console.print(f"[red]Cannot remove adopted project '{project_name}' without --force[/red]")
+        console.print("[yellow]This worktree was not created by ABM (it was adopted)[/yellow]")
+        console.print(
+            f"[dim]Hint: Use 'abm disown {project_name}' to remove ABM management but keep the worktree[/dim]"
+        )
+        console.print(
+            f"[dim]Or use 'abm remove {project_name} --force' to remove everything including the worktree[/dim]"
+        )
+        raise typer.Exit(1)
+
     if not force:
         msg = f"Remove project '{project_name}'"
         if delete_branch:
@@ -612,6 +842,63 @@ def remove(
     else:
         shutil.rmtree(project_dir)
         console.print(f"✅ Project '{project_name}' removed completely")
+
+
+@app.command()
+def disown(
+    project_name: Annotated[
+        str | None,
+        typer.Argument(help="Project name (auto-detected if in project directory)"),
+    ] = None,
+    force: Annotated[
+        bool,
+        typer.Option("--force", "-f", help="Skip confirmation"),
+    ] = False,
+) -> None:
+    """Remove ABM management but keep the worktree.
+
+    This is the opposite of 'adopt' - it removes ABM's metadata, symlinks,
+    and container configuration, but preserves the worktree directory itself.
+
+    Use this when you want to manage the worktree manually or with another tool.
+    """
+    project, project_dir = require_project(project_name)
+
+    if not force:
+        confirm = typer.confirm(f"Remove ABM management of '{project.name}' (worktree will be kept)?")
+        if not confirm:
+            raise typer.Abort()
+
+    worktree_path = Path(project.worktree_path)
+
+    # Stop Docker containers
+    console.print("Stopping Docker containers...")
+    stop_project_containers(str(worktree_path))
+
+    # Remove symlinks
+    if worktree_path.exists():
+        console.print("Removing ABM symlinks...")
+        remove_symlinks(worktree_path, SYMLINKED_FILES)
+
+        # Also remove .cursor symlink if it exists
+        cursor_link = worktree_path / ".cursor"
+        if cursor_link.is_symlink():
+            cursor_link.unlink()
+            console.print("[dim]→ Removed .cursor symlink[/dim]")
+
+        # Remove breeze config directory (ABM-specific)
+        breeze_config_dir = worktree_path / "files" / "airflow-breeze-config"
+        if breeze_config_dir.exists():
+            shutil.rmtree(breeze_config_dir)
+            console.print("[dim]→ Removed breeze config directory[/dim]")
+
+    # Remove project metadata directory
+    shutil.rmtree(project_dir)
+
+    console.print(f"✅ [green]Project '{project.name}' disowned[/green]")
+    console.print(f"   Worktree preserved at: {worktree_path}")
+    console.print("   PROJECT.md moved to worktree (if it existed)")
+    console.print("[dim]You can now manage this worktree manually or re-adopt it later[/dim]")
 
 
 @app.command()

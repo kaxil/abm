@@ -232,3 +232,107 @@ def test_remove_symlinks() -> None:
         assert not (worktree_dir / "PROJECT.md").exists()
         # Original file should still exist
         assert (project_dir / "PROJECT.md").exists()
+
+
+def test_validate_airflow_worktree() -> None:
+    """Test validating Airflow worktrees."""
+    import subprocess
+
+    from airflow_breeze_manager.utils import validate_airflow_worktree
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        repo_dir = Path(tmpdir) / "repo"
+        repo_dir.mkdir()
+
+        # Initialize git repo
+        subprocess.run(["git", "init"], cwd=repo_dir, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.com"],
+            cwd=repo_dir,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test User"],
+            cwd=repo_dir,
+            check=True,
+            capture_output=True,
+        )
+
+        # Create initial commit
+        (repo_dir / "README.md").write_text("Test")
+        subprocess.run(["git", "add", "."], cwd=repo_dir, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "Initial"],
+            cwd=repo_dir,
+            check=True,
+            capture_output=True,
+        )
+
+        # Create a worktree
+        subprocess.run(["git", "branch", "feature-1"], cwd=repo_dir, check=True, capture_output=True)
+        worktree_dir = Path(tmpdir) / "worktree"
+        subprocess.run(
+            ["git", "worktree", "add", str(worktree_dir), "feature-1"],
+            cwd=repo_dir,
+            check=True,
+            capture_output=True,
+        )
+
+        # Test valid worktree
+        is_valid, branch, error = validate_airflow_worktree(worktree_dir, repo_dir)
+        assert is_valid is True
+        assert branch == "feature-1"
+        assert error == ""
+
+        # Test non-existent path
+        is_valid, branch, error = validate_airflow_worktree(Path(tmpdir) / "nonexistent", repo_dir)
+        assert is_valid is False
+        assert "does not exist" in error
+
+
+def test_resolve_project_from_path() -> None:
+    """Test resolving project from worktree path."""
+    from unittest.mock import patch
+
+    from airflow_breeze_manager.models import ProjectMetadata, ProjectPorts
+    from airflow_breeze_manager.utils import resolve_project_from_path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        projects_dir = Path(tmpdir) / "projects"
+        projects_dir.mkdir()
+
+        worktree_path = Path(tmpdir) / "worktree"
+        worktree_path.mkdir()
+
+        # Create a project
+        project_dir = projects_dir / "test-project"
+        project_dir.mkdir()
+
+        project = ProjectMetadata(
+            name="test-project",
+            branch="main",
+            worktree_path=str(worktree_path),
+            ports=ProjectPorts(
+                webserver=28180,
+                flower=25655,
+                postgres=25533,
+                mysql=23406,
+                redis=26479,
+                ssh=12422,
+            ),
+            description="Test",
+            backend="sqlite",
+            python_version="3.11",
+            created_at="2025-01-01T00:00:00",
+        )
+        project.save(project_dir)
+
+        with patch("airflow_breeze_manager.utils.PROJECTS_DIR", projects_dir):
+            # Should find the project
+            result = resolve_project_from_path(worktree_path)
+            assert result == "test-project"
+
+            # Should not find non-existent worktree
+            result = resolve_project_from_path(Path(tmpdir) / "other")
+            assert result is None

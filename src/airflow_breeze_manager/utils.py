@@ -115,6 +115,88 @@ def git_branch_exists(repo_path: Path, branch: str) -> bool:
     return bool(result.stdout.strip())
 
 
+def validate_airflow_worktree(worktree_path: Path, airflow_repo: Path) -> tuple[bool, str, str]:
+    """Validate that a path is a valid Airflow git worktree.
+
+    Args:
+        worktree_path: Path to validate
+        airflow_repo: Path to the configured Airflow repository
+
+    Returns:
+        Tuple of (is_valid, branch_name, error_message)
+        If valid, branch_name is populated and error_message is empty
+        If invalid, branch_name is empty and error_message contains reason
+    """
+    if not worktree_path.exists():
+        return False, "", f"Path does not exist: {worktree_path}"
+
+    if not worktree_path.is_dir():
+        return False, "", f"Path is not a directory: {worktree_path}"
+
+    # Check if it's a git directory
+    git_dir = worktree_path / ".git"
+    if not git_dir.exists():
+        return False, "", f"Not a git repository: {worktree_path}"
+
+    try:
+        # Get the worktree's git directory (points to main repo)
+        result = run_command(
+            ["git", "rev-parse", "--git-common-dir"],
+            cwd=worktree_path,
+            capture_output=True,
+        )
+        common_dir = Path(result.stdout.strip()).resolve()
+
+        # Get the main repo's git directory
+        result = run_command(
+            ["git", "rev-parse", "--git-dir"],
+            cwd=airflow_repo,
+            capture_output=True,
+        )
+        main_git_dir = (airflow_repo / result.stdout.strip()).resolve()
+
+        # Check if they point to the same repository
+        if common_dir != main_git_dir:
+            return False, "", f"Worktree is not from the configured Airflow repository: {airflow_repo}"
+
+        # Get the branch name
+        result = run_command(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=worktree_path,
+            capture_output=True,
+        )
+        branch_name = result.stdout.strip()
+
+        if not branch_name or branch_name == "HEAD":
+            return False, "", "Worktree is in detached HEAD state"
+
+        return True, branch_name, ""
+
+    except subprocess.CalledProcessError as e:
+        return False, "", f"Git command failed: {e}"
+    except Exception as e:
+        return False, "", f"Unexpected error: {e}"
+
+
+def resolve_project_from_path(worktree_path: Path) -> str | None:
+    """Find if a worktree path is already managed by ABM.
+
+    Args:
+        worktree_path: Path to check
+
+    Returns:
+        Project name if found, None otherwise
+    """
+    worktree_path = worktree_path.resolve()
+    all_projects = get_all_projects()
+
+    for project in all_projects:
+        if Path(project.worktree_path).resolve() == worktree_path:
+            return project.name
+
+    return None
+
+
 def create_symlinks(project_dir: Path, worktree_path: Path, files: list[str]) -> None:
     """Create symlinks from project directory to worktree.
 
