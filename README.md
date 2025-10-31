@@ -177,12 +177,11 @@ Each project uses a unique `COMPOSE_PROJECT_NAME` (e.g., `abm-my-feature`) to en
 - ✅ **Portable** - database moves with the worktree
 
 **Postgres/MySQL:**
-- ⚠️ Projects **share the same database container** (e.g., one `postgres` container for all)
-- ✅ But each project gets its **own database** within that container
-- Example: `my-feature` → `airflow_my_feature` database, `bug-fix` → `airflow_bug_fix` database
-- ✅ **Schema isolation** - tables and data are separate per project
-- ✅ **Automatic creation** - ABM creates the database on first run via `init.sh`
+- ✅ Each project gets its **own isolated database** (e.g., `airflow_my_feature`, `airflow_bug_fix`)
+- ✅ **Schema isolation** - tables and data are completely separate per project
+- ✅ **Automatic creation** - ABM creates the database on first run
 - ✅ **Identified in UI** - Instance name shows which project you're viewing
+- 💡 **How it works**: Projects use the same database server but separate databases within it (similar to having separate schemas)
 
 ABM automatically configures each project with:
 1. Project-specific database connection strings
