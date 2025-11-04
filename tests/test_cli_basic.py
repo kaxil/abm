@@ -137,12 +137,12 @@ def test_project_name_slash_sanitization() -> None:
     """Test that project names with slashes are sanitized correctly.
 
     This prevents creating nested directories when users specify branch names
-    like 'feature/version-indicator' as the project name.
+    like 'feature/awesome-improvement' as the project name.
     """
     # Test the sanitization logic directly
-    name_with_slash = "feature/version-indicator"
+    name_with_slash = "feature/awesome-improvement"
     sanitized = name_with_slash.replace("/", "-")
-    assert sanitized == "feature-version-indicator"
+    assert sanitized == "feature-awesome-improvement"
     assert "/" not in sanitized
 
     # Test multiple slashes

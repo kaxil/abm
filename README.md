@@ -148,8 +148,8 @@ Default worktree base: `~/code/airflow-worktree`
 abm add my-feature --create-branch
 
 # Use branch name directly (slash sanitized automatically)
-abm add feature/version-indicator --branch feature/version-indicator
-# → Creates project "feature-version-indicator" for branch "feature/version-indicator"
+abm add feature/awesome-improvement --branch feature/awesome-improvement
+# → Creates project "feature-awesome-improvement" for branch "feature/awesome-improvement"
 
 # Enter breeze shell
 abm shell my-feature
