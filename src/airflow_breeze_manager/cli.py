@@ -3,6 +3,8 @@ from __future__ import annotations
 import builtins
 import os
 import shutil
+import subprocess
+import sys
 import webbrowser
 from datetime import datetime
 from pathlib import Path
@@ -11,7 +13,7 @@ from typing import Annotated
 import typer
 from rich.table import Table
 
-from airflow_breeze_manager.cli_helpers import cleanup_breeze_containers
+from airflow_breeze_manager.cli_helpers import cleanup_breeze_containers, find_airflow_container
 from airflow_breeze_manager.constants import (
     ABM_CONFIG_FILE,
     ABM_DIR,
@@ -1015,6 +1017,61 @@ def shell(
         ],
         env,
     )
+
+
+@app.command(name="exec")
+def exec_command(
+    project_name: Annotated[
+        str | None,
+        typer.Argument(help="Project name (auto-detected if in project directory)"),
+    ] = None,
+    exec_args: Annotated[
+        builtins.list[str] | None,
+        typer.Argument(help="Additional arguments to pass to the shell"),
+    ] = None,
+) -> None:
+    """Join the interactive shell of a running Airflow container.
+
+    This command is useful for connecting to an already running container,
+    for example one started with 'abm shell' or 'abm start-airflow'.
+
+    Examples:
+        abm exec
+        abm exec my-project bash
+        abm exec my-project python -c "print('hello')"
+    """
+    project, _ = require_project(project_name)
+
+    if project.frozen:
+        console.print(
+            f"[yellow]Project '{project.name}' is frozen. Thaw it first with 'abm thaw {project.name}'[/yellow]"
+        )
+        raise typer.Exit(1)
+
+    worktree_path = project.worktree_path
+    container_id = find_airflow_container(worktree_path)
+
+    if not container_id:
+        console.print(f"[red]No running Airflow container found for project '{project.name}'[/red]")
+        console.print("[dim]Start the container first with 'abm shell' or 'abm start-airflow'[/dim]")
+        raise typer.Exit(1)
+
+    # Build the docker exec command
+    cmd_to_run = [
+        "docker",
+        "exec",
+        "-it",
+        container_id,
+        "/opt/airflow/scripts/docker/entrypoint_exec.sh",
+    ]
+
+    if exec_args:
+        cmd_to_run.extend(exec_args)
+
+    console.print(f"[green]Joining Airflow container for '{project.name}'...[/green]")
+
+    process = subprocess.run(cmd_to_run, check=False)
+    sys.exit(process.returncode)
 
 
 @app.command()
