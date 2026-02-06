@@ -67,7 +67,7 @@ def _get_bearer_token(
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             data = json.loads(response.read())
-            token = data.get("access_token")
+            token: str | None = data.get("access_token")
             if token:
                 _token_cache[cache_key] = (token, time.monotonic())
             return token
