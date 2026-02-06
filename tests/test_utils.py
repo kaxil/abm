@@ -73,6 +73,8 @@ def test_get_conflicting_ports_no_conflicts() -> None:
         mysql=23406,
         redis=26479,
         ssh=12422,
+        mssql=21533,
+        rabbitmq=25772,
     )
     conflicts = get_conflicting_ports(ports)
     # Should have no conflicts on typical system
@@ -89,6 +91,8 @@ def test_allocate_ports_default() -> None:
             assert ports.webserver == 28180
             assert ports.flower == 25655
             assert ports.postgres == 25533
+            assert ports.mssql == 21533
+            assert ports.rabbitmq == 25772
 
 
 def test_allocate_ports_with_existing_projects() -> None:
@@ -111,6 +115,8 @@ def test_allocate_ports_with_existing_projects() -> None:
                 mysql=23406,
                 redis=26479,
                 ssh=12422,
+                mssql=21533,
+                rabbitmq=25772,
             ),
         )
 
@@ -320,6 +326,8 @@ def test_resolve_project_from_path() -> None:
                 mysql=23406,
                 redis=26479,
                 ssh=12422,
+                mssql=21533,
+                rabbitmq=25772,
             ),
             description="Test",
             backend="sqlite",
@@ -336,3 +344,75 @@ def test_resolve_project_from_path() -> None:
             # Should not find non-existent worktree
             result = resolve_project_from_path(Path(tmpdir) / "other")
             assert result is None
+
+
+def test_get_running_containers_mprocs_detection() -> None:
+    """Test that mprocs is detected as start-airflow (not just tmux)."""
+    from unittest.mock import MagicMock, patch
+
+    from airflow_breeze_manager.utils import get_running_containers
+
+    mock_container = MagicMock()
+    mock_container.labels = {
+        "com.docker.compose.project.working_dir": "/tmp/test-project",
+        "com.docker.compose.service": "airflow",
+    }
+    # Simulate mprocs running in the container
+    mock_container.top.return_value = {
+        "Processes": [
+            ["1", "airflow", "0:00", "/usr/bin/mprocs"],
+            ["2", "airflow", "0:00", "airflow webserver"],
+        ]
+    }
+
+    mock_project = MagicMock()
+    mock_project.name = "test-project"
+    mock_project.worktree_path = "/tmp/test-project"
+
+    with (
+        patch("airflow_breeze_manager.utils.get_all_projects", return_value=[mock_project]),
+        patch("docker.from_env") as mock_docker,
+    ):
+        mock_client = MagicMock()
+        mock_docker.return_value = mock_client
+        mock_client.containers.list.return_value = [mock_container]
+
+        result = get_running_containers()
+        assert "test-project" in result
+        assert result["test-project"]["is_start_airflow"] is True
+
+
+def test_get_running_containers_tmux_detection() -> None:
+    """Test that tmux is still detected as start-airflow."""
+    from unittest.mock import MagicMock, patch
+
+    from airflow_breeze_manager.utils import get_running_containers
+
+    mock_container = MagicMock()
+    mock_container.labels = {
+        "com.docker.compose.project.working_dir": "/tmp/test-project",
+        "com.docker.compose.service": "airflow",
+    }
+    # Simulate tmux running in the container
+    mock_container.top.return_value = {
+        "Processes": [
+            ["1", "airflow", "0:00", "tmux new-session"],
+            ["2", "airflow", "0:00", "airflow webserver"],
+        ]
+    }
+
+    mock_project = MagicMock()
+    mock_project.name = "test-project"
+    mock_project.worktree_path = "/tmp/test-project"
+
+    with (
+        patch("airflow_breeze_manager.utils.get_all_projects", return_value=[mock_project]),
+        patch("docker.from_env") as mock_docker,
+    ):
+        mock_client = MagicMock()
+        mock_docker.return_value = mock_client
+        mock_client.containers.list.return_value = [mock_container]
+
+        result = get_running_containers()
+        assert "test-project" in result
+        assert result["test-project"]["is_start_airflow"] is True

@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 # Version for schema migrations
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Base directories
 HOME = Path.home()
@@ -28,6 +28,8 @@ PORT_RANGES = {
     "mysql": (23406, 23999),  # MySQL (breeze default: 23306)
     "redis": (26479, 26999),  # Redis (breeze default: 26379)
     "ssh": (12422, 12999),  # SSH server (breeze default: 12322)
+    "mssql": (21533, 21999),  # MSSQL (breeze default: 21433)
+    "rabbitmq": (25772, 25999),  # RabbitMQ (breeze default: 25672)
 }
 
 # Default ports for first ABM project (offset +100 from breeze defaults)
@@ -38,6 +40,8 @@ DEFAULT_PORTS = {
     "mysql": 23406,
     "redis": 26479,
     "ssh": 12422,
+    "mssql": 21533,
+    "rabbitmq": 25772,
 }
 
 # Project files managed by ABM
@@ -65,4 +69,6 @@ BREEZE_ENV_PREFIXES = [
     "POSTGRES_HOST_PORT",
     "MYSQL_HOST_PORT",
     "REDIS_HOST_PORT",
+    "MSSQL_HOST_PORT",
+    "RABBITMQ_HOST_PORT",
 ]

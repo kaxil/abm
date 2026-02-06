@@ -187,7 +187,7 @@ def _auto_resolve_ports(project: ProjectMetadata, project_dir: Path, conflicts: 
     all_existing = get_all_projects()
     used_ports = {
         service: {getattr(p.ports, service) for p in all_existing if p.name != project.name}
-        for service in ["webserver", "flower", "postgres", "mysql", "redis", "ssh"]
+        for service in ["webserver", "flower", "postgres", "mysql", "redis", "ssh", "mssql", "rabbitmq"]
     }
 
     failed = []
@@ -345,7 +345,7 @@ def add(
     python_version: Annotated[
         str,
         typer.Option(help="Python version"),
-    ] = "3.11",
+    ] = "3.12",
     create_branch: Annotated[
         bool,
         typer.Option("--create-branch", help="Create new branch if it doesn't exist"),
@@ -444,7 +444,9 @@ def add(
 - Flower: {ports.flower}
 - Postgres: {ports.postgres}
 - MySQL: {ports.mysql}
+- MSSQL: {ports.mssql}
 - Redis: {ports.redis}
+- RabbitMQ: {ports.rabbitmq}
 - SSH: {ports.ssh}
 
 ## Notes
@@ -594,7 +596,7 @@ def adopt(
     python_version: Annotated[
         str,
         typer.Option(help="Python version"),
-    ] = "3.11",
+    ] = "3.12",
 ) -> None:
     """Adopt an existing worktree into ABM management.
 
@@ -678,7 +680,9 @@ def adopt(
 - Flower: {ports.flower}
 - Postgres: {ports.postgres}
 - MySQL: {ports.mysql}
+- MSSQL: {ports.mssql}
 - Redis: {ports.redis}
+- RabbitMQ: {ports.rabbitmq}
 - SSH: {ports.ssh}
 
 ## Notes
@@ -979,7 +983,9 @@ def status(
     console.print(f"  Flower: {project.ports.flower}")
     console.print(f"  Postgres: {project.ports.postgres}")
     console.print(f"  MySQL: {project.ports.mysql}")
+    console.print(f"  MSSQL: {project.ports.mssql}")
     console.print(f"  Redis: {project.ports.redis}")
+    console.print(f"  RabbitMQ: {project.ports.rabbitmq}")
     console.print(f"  SSH: {project.ports.ssh}")
 
     console.print("\n[bold]URLs:[/bold]")
@@ -1167,6 +1173,10 @@ def shell(
         str | None,
         typer.Argument(help="Project name (auto-detected if in project directory)"),
     ] = None,
+    extra_args: Annotated[
+        builtins.list[str] | None,
+        typer.Argument(help="Extra arguments passed to breeze shell"),
+    ] = None,
 ) -> None:
     """Enter breeze shell for a project."""
     project, project_dir = require_project(project_name)
@@ -1199,6 +1209,17 @@ def shell(
     compose_project = get_docker_compose_project_name(project.name)
     env["COMPOSE_PROJECT_NAME"] = compose_project
 
+    breeze_cmd = [
+        "breeze",
+        "shell",
+        "--python",
+        project.python_version,
+        "--backend",
+        project.backend,
+    ]
+    if extra_args:
+        breeze_cmd.extend(extra_args)
+
     if is_json_mode():
         # Don't launch shell — return the env vars and command for the agent
         json_success(
@@ -1207,14 +1228,7 @@ def shell(
                 "worktree_path": str(worktree_path),
                 "env": port_env,
                 "compose_project_name": compose_project,
-                "breeze_command": [
-                    "breeze",
-                    "shell",
-                    "--python",
-                    project.python_version,
-                    "--backend",
-                    project.backend,
-                ],
+                "breeze_command": breeze_cmd,
             }
         )
 
@@ -1228,18 +1242,7 @@ def shell(
 
     # Run breeze shell with project-specific python and backend
     os.chdir(worktree_path)
-    os.execvpe(
-        "breeze",
-        [
-            "breeze",
-            "shell",
-            "--python",
-            project.python_version,
-            "--backend",
-            project.backend,
-        ],
-        env,
-    )
+    os.execvpe("breeze", breeze_cmd, env)
 
 
 @app.command(name="exec", rich_help_panel="Environment Commands")
@@ -1736,12 +1739,15 @@ _abm() {
             _values "abm command" \\
                 "init[Initialize ABM]" \\
                 "add[Create new project]" \\
+                "adopt[Adopt existing worktree]" \\
                 "list[List all projects]" \\
                 "status[Show project status]" \\
                 "shell[Enter breeze shell]" \\
+                "exec[Join running container]" \\
                 "run[Run breeze command]" \\
                 "start-airflow[Start full Airflow]" \\
                 "remove[Remove project]" \\
+                "disown[Remove ABM management]" \\
                 "freeze[Freeze project]" \\
                 "thaw[Thaw project]" \\
                 "cleanup[Clean up containers]" \\
@@ -1761,8 +1767,21 @@ _abm() {
                         '--python-version=[Python version]:(3.9 3.10 3.11 3.12 3.13)' \\
                         '--help[Show help]'
                     ;;
-                shell|status|start-airflow|run|freeze|thaw)
+                shell|status|start-airflow|run|exec|freeze|thaw|disown)
                     _arguments \\
+                        '--help[Show help]' \\
+                        '1:project:compadd ${(f)"$(ls ~/.airflow-breeze-manager/projects 2>/dev/null)"}'
+                    ;;
+                start-airflow)
+                    _arguments \\
+                        '--dev-mode[Enable dev mode]' \\
+                        '--skip-assets-compilation[Skip assets compilation]' \\
+                        '--executor=[Executor type]:(LocalExecutor CeleryExecutor EdgeExecutor)' \\
+                        '--load-example-dags[Load example DAGs]' \\
+                        '--create-all-roles[Create all roles]' \\
+                        '--mount-ui-dist[Mount UI dist]' \\
+                        '--terminal-multiplexer=[Terminal multiplexer]:(mprocs tmux)' \\
+                        '--debug-components=[Debug components]' \\
                         '--help[Show help]' \\
                         '1:project:compadd ${(f)"$(ls ~/.airflow-breeze-manager/projects 2>/dev/null)"}'
                     ;;
@@ -1800,13 +1819,13 @@ _abm "$@"
     local cur prev commands projects
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    commands="init add list status shell run start-airflow remove freeze thaw cleanup setup-autocomplete docker pr"
+    commands="init add adopt list status shell exec run start-airflow remove disown freeze thaw cleanup setup-autocomplete docker pr"
 
     if [ $COMP_CWORD -eq 1 ]; then
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))
     elif [ $COMP_CWORD -eq 2 ]; then
         case "$prev" in
-            shell|remove|status|start-airflow|run|freeze|thaw)
+            shell|remove|status|start-airflow|run|exec|freeze|thaw|disown)
                 projects=$(ls ~/.airflow-breeze-manager/projects 2>/dev/null)
                 COMPREPLY=($(compgen -W "$projects" -- "$cur"))
                 ;;
@@ -1820,19 +1839,22 @@ complete -F _abm_completion abm
                 f.write("""complete -c abm -f
 complete -c abm -n "__fish_use_subcommand" -a "init" -d "Initialize ABM"
 complete -c abm -n "__fish_use_subcommand" -a "add" -d "Create new project"
+complete -c abm -n "__fish_use_subcommand" -a "adopt" -d "Adopt existing worktree"
 complete -c abm -n "__fish_use_subcommand" -a "list" -d "List all projects"
 complete -c abm -n "__fish_use_subcommand" -a "status" -d "Show project status"
 complete -c abm -n "__fish_use_subcommand" -a "shell" -d "Enter breeze shell"
+complete -c abm -n "__fish_use_subcommand" -a "exec" -d "Join running container"
 complete -c abm -n "__fish_use_subcommand" -a "run" -d "Run breeze command"
 complete -c abm -n "__fish_use_subcommand" -a "start-airflow" -d "Start full Airflow"
 complete -c abm -n "__fish_use_subcommand" -a "remove" -d "Remove project"
+complete -c abm -n "__fish_use_subcommand" -a "disown" -d "Remove ABM management"
 complete -c abm -n "__fish_use_subcommand" -a "freeze" -d "Freeze project"
 complete -c abm -n "__fish_use_subcommand" -a "thaw" -d "Thaw project"
 complete -c abm -n "__fish_use_subcommand" -a "cleanup" -d "Clean up containers"
 complete -c abm -n "__fish_use_subcommand" -a "setup-autocomplete" -d "Setup completion"
 
 # Project name completions
-set -l project_commands shell remove status start-airflow run freeze thaw
+set -l project_commands shell remove status start-airflow run exec freeze thaw disown
 for cmd in $project_commands
     complete -c abm -n "__fish_seen_subcommand_from $cmd" -a "(ls ~/.airflow-breeze-manager/projects 2>/dev/null)"
 end
@@ -1909,12 +1931,15 @@ fi
             _values "abm command" \\
                 "init[Initialize ABM]" \\
                 "add[Create new project]" \\
+                "adopt[Adopt existing worktree]" \\
                 "list[List all projects]" \\
                 "status[Show project status]" \\
                 "shell[Enter breeze shell]" \\
+                "exec[Join running container]" \\
                 "run[Run breeze command]" \\
                 "start-airflow[Start full Airflow]" \\
                 "remove[Remove project]" \\
+                "disown[Remove ABM management]" \\
                 "freeze[Freeze project]" \\
                 "thaw[Thaw project]" \\
                 "cleanup[Clean up containers]" \\
@@ -1934,8 +1959,21 @@ fi
                         '--python-version=[Python version]:(3.9 3.10 3.11 3.12 3.13)' \\
                         '--help[Show help]'
                     ;;
-                shell|status|start-airflow|run|freeze|thaw)
+                shell|status|start-airflow|run|exec|freeze|thaw|disown)
                     _arguments \\
+                        '--help[Show help]' \\
+                        '1:project:compadd ${(f)"$(ls ~/.airflow-breeze-manager/projects 2>/dev/null)"}'
+                    ;;
+                start-airflow)
+                    _arguments \\
+                        '--dev-mode[Enable dev mode]' \\
+                        '--skip-assets-compilation[Skip assets compilation]' \\
+                        '--executor=[Executor type]:(LocalExecutor CeleryExecutor EdgeExecutor)' \\
+                        '--load-example-dags[Load example DAGs]' \\
+                        '--create-all-roles[Create all roles]' \\
+                        '--mount-ui-dist[Mount UI dist]' \\
+                        '--terminal-multiplexer=[Terminal multiplexer]:(mprocs tmux)' \\
+                        '--debug-components=[Debug components]' \\
                         '--help[Show help]' \\
                         '1:project:compadd ${(f)"$(ls ~/.airflow-breeze-manager/projects 2>/dev/null)"}'
                     ;;
@@ -1983,6 +2021,42 @@ def start_airflow(
         str | None,
         typer.Argument(help="Project name (auto-detected if in project directory)"),
     ] = None,
+    dev_mode: Annotated[
+        bool,
+        typer.Option("--dev-mode", help="Enable dev mode for UI development"),
+    ] = False,
+    skip_assets_compilation: Annotated[
+        bool,
+        typer.Option("--skip-assets-compilation", help="Skip assets compilation for faster startup"),
+    ] = False,
+    executor: Annotated[
+        str | None,
+        typer.Option("--executor", help="Executor type (e.g., LocalExecutor, CeleryExecutor, EdgeExecutor)"),
+    ] = None,
+    load_example_dags: Annotated[
+        bool,
+        typer.Option("--load-example-dags", "-e", help="Load example DAGs"),
+    ] = False,
+    create_all_roles: Annotated[
+        bool,
+        typer.Option("--create-all-roles", help="Create all roles (for FabAuthManager testing)"),
+    ] = False,
+    mount_ui_dist: Annotated[
+        bool,
+        typer.Option("--mount-ui-dist", help="Mount UI dist for UI development"),
+    ] = False,
+    terminal_multiplexer: Annotated[
+        str | None,
+        typer.Option("--terminal-multiplexer", "-t", help="Terminal multiplexer (mprocs or tmux)"),
+    ] = None,
+    debug_components: Annotated[
+        builtins.list[str] | None,
+        typer.Option("--debug-components", help="Components to enable remote debugging for"),
+    ] = None,
+    extra_args: Annotated[
+        builtins.list[str] | None,
+        typer.Argument(help="Extra arguments passed to breeze start-airflow"),
+    ] = None,
 ) -> None:
     """Start Airflow in breeze (equivalent to 'breeze start-airflow')."""
     project, project_dir = require_project(project_name)
@@ -2023,6 +2097,25 @@ def start_airflow(
         "--backend",
         project.backend,
     ]
+    if dev_mode:
+        breeze_cmd.append("--dev-mode")
+    if skip_assets_compilation:
+        breeze_cmd.append("--skip-assets-compilation")
+    if executor:
+        breeze_cmd.extend(["--executor", executor])
+    if load_example_dags:
+        breeze_cmd.append("--load-example-dags")
+    if create_all_roles:
+        breeze_cmd.append("--create-all-roles")
+    if mount_ui_dist:
+        breeze_cmd.append("--mount-ui-dist")
+    if terminal_multiplexer:
+        breeze_cmd.extend(["--terminal-multiplexer", terminal_multiplexer])
+    if debug_components:
+        for component in debug_components:
+            breeze_cmd.extend(["--debug-components", component])
+    if extra_args:
+        breeze_cmd.extend(extra_args)
 
     if is_json_mode():
         # Launch detached via subprocess.Popen, return PID + URLs

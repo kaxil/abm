@@ -114,6 +114,8 @@ def sample_project_ports():
         mysql=23406,
         redis=26479,
         ssh=12422,
+        mssql=21533,
+        rabbitmq=25772,
     )
 
 
@@ -148,6 +150,8 @@ def sample_adopted_project(sample_project_ports, mock_worktree_base):
             mysql=23407,
             redis=26480,
             ssh=12423,
+            mssql=21534,
+            rabbitmq=25773,
         ),
         description="Adopted project",
         backend="sqlite",

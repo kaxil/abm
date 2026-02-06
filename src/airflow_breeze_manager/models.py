@@ -18,6 +18,8 @@ class ProjectPorts:
     mysql: int
     redis: int
     ssh: int
+    mssql: int
+    rabbitmq: int
 
     @classmethod
     def default(cls) -> ProjectPorts:
@@ -37,6 +39,8 @@ class ProjectPorts:
             "MYSQL_HOST_PORT": str(self.mysql),
             "REDIS_HOST_PORT": str(self.redis),
             "SSH_PORT": str(self.ssh),
+            "MSSQL_HOST_PORT": str(self.mssql),
+            "RABBITMQ_HOST_PORT": str(self.rabbitmq),
         }
 
         # Set Airflow instance name in UI (shows in navbar)
@@ -57,7 +61,7 @@ class ProjectMetadata:
     description: str = ""
     pr_number: int | None = None
     backend: str = "sqlite"
-    python_version: str = "3.11"
+    python_version: str = "3.12"
     created_at: str = ""
     frozen: bool = False
     managed_worktree: bool = True  # True if ABM created the worktree, False if adopted
@@ -97,6 +101,12 @@ class ProjectMetadata:
             # Calculate SSH port based on webserver port offset from OLD defaults
             ports_data["ssh"] = 12322 + (ports_data.get("webserver", 28080) - 28080)
 
+        # Migration: Add MSSQL and RabbitMQ ports if missing (for old projects created before v0.3.0)
+        if "mssql" not in ports_data:
+            ports_data["mssql"] = 21533 + (ports_data.get("webserver", 28180) - 28180)
+        if "rabbitmq" not in ports_data:
+            ports_data["rabbitmq"] = 25772 + (ports_data.get("webserver", 28180) - 28180)
+
         # Migration: Update ports from old defaults (28080, etc.) to new defaults (28180, etc.)
         # This avoids conflicts with vanilla breeze
         old_defaults = {
@@ -114,6 +124,8 @@ class ProjectMetadata:
             "mysql": 23406,
             "redis": 26479,
             "ssh": 12422,
+            "mssql": 21533,
+            "rabbitmq": 25772,
         }
 
         # If all ports match old defaults exactly, migrate to new defaults
@@ -123,7 +135,7 @@ class ProjectMetadata:
         # If ports were offset from old defaults, apply same offset to new defaults
         elif ports_data.get("webserver", 0) < 28180:  # Old range
             offset = ports_data.get("webserver", 28080) - 28080
-            for k in ["webserver", "flower", "postgres", "mysql", "redis", "ssh"]:
+            for k in ["webserver", "flower", "postgres", "mysql", "redis", "ssh", "mssql", "rabbitmq"]:
                 ports_data[k] = new_defaults[k] + offset
 
         ports = ProjectPorts(**ports_data)

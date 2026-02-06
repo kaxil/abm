@@ -47,11 +47,14 @@ This file provides guidance to Claude Code when working with this repository.
 ### Port Allocation
 
 Ports are allocated from ranges to avoid conflicts:
-- Webserver: 28080-28999 (breeze default: 28080)
-- Flower: 25555-25999 (breeze default: 25555)
-- Postgres: 25433-25999 (breeze default: 25433)
-- MySQL: 23306-23999 (breeze default: 23306)
-- Redis: 26379-26999 (breeze default: 26379)
+- Webserver: 28180-28999 (breeze default: 28080)
+- Flower: 25655-25999 (breeze default: 25555)
+- Postgres: 25533-25999 (breeze default: 25433)
+- MySQL: 23406-23999 (breeze default: 23306)
+- Redis: 26479-26999 (breeze default: 26379)
+- SSH: 12422-12999 (breeze default: 12322)
+- MSSQL: 21533-21999 (breeze default: 21433)
+- RabbitMQ: 25772-25999 (breeze default: 25672)
 
 ### Docker Isolation
 
@@ -138,8 +141,10 @@ ABM wraps breeze commands and sets environment variables:
 ```python
 env = os.environ.copy()
 env.update({
-    "WEB_HOST_PORT": "28081",
-    "FLOWER_HOST_PORT": "25556",
+    "WEB_HOST_PORT": "28181",
+    "FLOWER_HOST_PORT": "25656",
+    "MSSQL_HOST_PORT": "21534",
+    "RABBITMQ_HOST_PORT": "25773",
     # ... other ports
     "COMPOSE_PROJECT_NAME": "abm-my-feature"
 })

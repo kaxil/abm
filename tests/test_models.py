@@ -12,6 +12,8 @@ def test_project_ports_default() -> None:
     assert ports.mysql == 23406
     assert ports.redis == 26479
     assert ports.ssh == 12422
+    assert ports.mssql == 21533
+    assert ports.rabbitmq == 25772
 
 
 def test_project_ports_to_env_dict() -> None:
@@ -23,6 +25,8 @@ def test_project_ports_to_env_dict() -> None:
         mysql=23407,
         redis=26480,
         ssh=12423,
+        mssql=21534,
+        rabbitmq=25773,
     )
     env_dict = ports.to_env_dict()
     assert env_dict["WEB_HOST_PORT"] == "28181"
@@ -31,6 +35,8 @@ def test_project_ports_to_env_dict() -> None:
     assert env_dict["MYSQL_HOST_PORT"] == "23407"
     assert env_dict["REDIS_HOST_PORT"] == "26480"
     assert env_dict["SSH_PORT"] == "12423"
+    assert env_dict["MSSQL_HOST_PORT"] == "21534"
+    assert env_dict["RABBITMQ_HOST_PORT"] == "25773"
 
 
 def test_project_ports_to_env_dict_with_project_name() -> None:
@@ -87,6 +93,8 @@ def test_project_metadata_migration_missing_ssh_port() -> None:
 
     restored = ProjectMetadata.from_dict(data)
     assert restored.ports.ssh == 12422  # Should be calculated
+    assert restored.ports.mssql == 21533  # Should be added via migration
+    assert restored.ports.rabbitmq == 25772  # Should be added via migration
 
 
 def test_project_metadata_migration_old_defaults() -> None:
@@ -116,6 +124,37 @@ def test_project_metadata_migration_old_defaults() -> None:
     assert restored.ports.webserver == 28180
     assert restored.ports.flower == 25655
     assert restored.ports.ssh == 12422
+    assert restored.ports.mssql == 21533
+    assert restored.ports.rabbitmq == 25772
+
+
+def test_project_metadata_migration_missing_mssql_rabbitmq() -> None:
+    """Test migration for old projects missing MSSQL and RabbitMQ ports."""
+    data = {
+        "name": "old-project",
+        "branch": "main",
+        "worktree_path": "/tmp/test",
+        "description": "",
+        "pr_number": None,
+        "backend": "sqlite",
+        "python_version": "3.11",
+        "created_at": "",
+        "frozen": False,
+        "ports": {
+            "webserver": 28181,
+            "flower": 25656,
+            "postgres": 25534,
+            "mysql": 23407,
+            "redis": 26480,
+            "ssh": 12423,
+            # mssql and rabbitmq missing
+        },
+    }
+
+    restored = ProjectMetadata.from_dict(data)
+    # Should calculate from webserver offset (28181 - 28180 = 1)
+    assert restored.ports.mssql == 21534
+    assert restored.ports.rabbitmq == 25773
 
 
 def test_project_metadata_save_load(tmp_path) -> None:
@@ -236,3 +275,5 @@ def test_project_metadata_migration_managed_worktree() -> None:
     assert project.managed_worktree is True  # Should default to True for old projects
     assert project.name == "old-project"
     assert project.branch == "feature/old"
+    assert project.ports.mssql == 21533  # Should be added via migration
+    assert project.ports.rabbitmq == 25772  # Should be added via migration

@@ -67,6 +67,8 @@ def allocate_ports(exclude_projects: list[str] | None = None) -> ProjectPorts:
         "mysql": {p.ports.mysql for p in existing_projects},
         "redis": {p.ports.redis for p in existing_projects},
         "ssh": {p.ports.ssh for p in existing_projects},
+        "mssql": {p.ports.mssql for p in existing_projects},
+        "rabbitmq": {p.ports.rabbitmq for p in existing_projects},
     }
 
     allocated_ports = {}
@@ -247,7 +249,7 @@ def is_port_in_use(port: int) -> bool:
 def get_conflicting_ports(ports: ProjectPorts) -> dict[str, int]:
     """Check which ports are already in use."""
     conflicts = {}
-    for service in ["webserver", "flower", "postgres", "mysql", "redis", "ssh"]:
+    for service in ["webserver", "flower", "postgres", "mysql", "redis", "ssh", "mssql", "rabbitmq"]:
         port = getattr(ports, service)
         if is_port_in_use(port):
             conflicts[service] = port
@@ -335,16 +337,19 @@ def get_running_containers() -> dict[str, dict[str, Any]]:
 
                     project_containers[project_name]["services"].append(service_name)
 
-                    # Check if running start-airflow (has tmux and multiple airflow processes)
+                    # Check if running start-airflow (has tmux/mprocs and multiple airflow processes)
                     try:
                         top_output = container.top()
                         processes = top_output.get("Processes", [])
-                        # Look for tmux in process list
+                        # Look for tmux or mprocs in process list
+                        # Breeze defaults to mprocs since Nov 2025, but tmux is still supported
                         for process in processes:
                             # Process is a list: [PID, USER, TIME, COMMAND]
-                            if len(process) > 3 and "tmux" in str(process[3]).lower():
-                                project_containers[project_name]["is_start_airflow"] = True
-                                break
+                            if len(process) > 3:
+                                cmd_str = str(process[3]).lower()
+                                if "tmux" in cmd_str or "mprocs" in cmd_str:
+                                    project_containers[project_name]["is_start_airflow"] = True
+                                    break
                     except Exception:
                         # If we can't check, assume shell
                         pass
