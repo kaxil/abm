@@ -63,15 +63,15 @@ from airflow_breeze_manager.utils import (
 
 app = typer.Typer(
     help="Manage multiple Airflow development environments with isolated breeze instances.\n\n"
-    "Agent mode: pass --json for structured output, --yes to skip prompts.",
+    "Agent mode: pass --json/--yes [bold]before[/bold] the command, e.g. abm --json list.",
     no_args_is_help=True,
     rich_markup_mode="rich",
     epilog="[dim]EXAMPLES[/dim]\n\n"
-    "  abm list --json[dim]                     # projects as JSON[/dim]\n\n"
-    "  abm status my-project --json[dim]        # details + running state[/dim]\n\n"
-    "  abm add feat --json --create-branch[dim] # no prompts[/dim]\n\n"
-    "  abm run proj --json pytest tests/[dim]   # captured stdout + exit code[/dim]\n\n"
-    "  abm shell proj --json[dim]               # env vars without launching[/dim]\n\n"
+    "  abm --json list[dim]                     # projects as JSON[/dim]\n\n"
+    "  abm --json status my-project[dim]        # details + running state[/dim]\n\n"
+    "  abm --json add feat --create-branch[dim] # no prompts[/dim]\n\n"
+    "  abm --json run proj pytest tests/[dim]   # captured stdout + exit code[/dim]\n\n"
+    "  abm --json shell proj[dim]               # env vars without launching[/dim]\n\n"
     "  abm --yes remove proj -f[dim]            # skip confirmation[/dim]",
 )
 
