@@ -68,6 +68,21 @@ class ProjectMetadata:
         data["ports"] = asdict(self.ports)
         return data
 
+    def to_rich_dict(self) -> dict[str, Any]:
+        """Convert to dictionary with computed fields for JSON output.
+
+        Includes URLs and compose project name on top of the base to_dict().
+        """
+        from airflow_breeze_manager.utils import get_docker_compose_project_name
+
+        data = self.to_dict()
+        data["urls"] = {
+            "webserver": f"http://localhost:{self.ports.webserver}",
+            "flower": f"http://localhost:{self.ports.flower}",
+        }
+        data["compose_project_name"] = get_docker_compose_project_name(self.name)
+        return data
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ProjectMetadata:
         """Create from dictionary."""

@@ -24,6 +24,24 @@ from airflow_breeze_manager.constants import (
     SYMLINKED_FILES,
 )
 from airflow_breeze_manager.models import GlobalConfig, ProjectMetadata
+from airflow_breeze_manager.output import (
+    BRANCH_NOT_FOUND,
+    DOCKER_ERROR,
+    INVALID_INPUT,
+    INVALID_WORKTREE,
+    NOT_INITIALIZED,
+    PORT_CONFLICT,
+    PROJECT_EXISTS,
+    PROJECT_FROZEN,
+    PROJECT_NOT_FOUND,
+    WORKTREE_EXISTS,
+    is_json_mode,
+    json_error,
+    json_success,
+    safe_confirm,
+    safe_prompt,
+    set_agent_mode,
+)
 from airflow_breeze_manager.utils import (
     allocate_ports,
     console,
@@ -44,18 +62,56 @@ from airflow_breeze_manager.utils import (
 )
 
 app = typer.Typer(
-    help="Manage multiple Airflow development environments with isolated breeze instances",
+    help="Manage multiple Airflow development environments with isolated breeze instances.\n\n"
+    "Agent mode: pass --json for structured output, --yes to skip prompts.",
     no_args_is_help=True,
+    rich_markup_mode="rich",
+    epilog="[dim]EXAMPLES[/dim]\n\n"
+    "  abm list --json[dim]                     # projects as JSON[/dim]\n\n"
+    "  abm status my-project --json[dim]        # details + running state[/dim]\n\n"
+    "  abm add feat --json --create-branch[dim] # no prompts[/dim]\n\n"
+    "  abm run proj --json pytest tests/[dim]   # captured stdout + exit code[/dim]\n\n"
+    "  abm shell proj --json[dim]               # env vars without launching[/dim]\n\n"
+    "  abm --yes remove proj -f[dim]            # skip confirmation[/dim]",
 )
+
+
+# ---------------------------------------------------------------------------
+# Global --json / --yes flags via Typer callback
+# ---------------------------------------------------------------------------
+
+
+@app.callback()
+def main(
+    json: Annotated[
+        bool,
+        typer.Option("--json", help="Output as JSON (implies --yes, non-interactive)"),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Skip all confirmation prompts"),
+    ] = False,
+) -> None:
+    """Manage multiple Airflow development environments with isolated breeze instances."""
+    set_agent_mode(json_mode=json, yes_mode=yes)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
 def get_config() -> GlobalConfig:
     """Get or create global configuration."""
     if not ABM_CONFIG_FILE.exists():
+        if is_json_mode():
+            json_error("ABM not initialized. Run 'abm init' first.", NOT_INITIALIZED)
         console.print("[red]ABM not initialized. Run 'abm init' first.[/red]")
         raise typer.Exit(1)
     config = GlobalConfig.load(ABM_CONFIG_FILE)
     if not config:
+        if is_json_mode():
+            json_error("Failed to load configuration.", NOT_INITIALIZED)
         console.print("[red]Failed to load configuration.[/red]")
         raise typer.Exit(1)
     return config
@@ -71,11 +127,15 @@ def require_project(name: str | None = None) -> tuple[ProjectMetadata, Path]:
                 name = project.name
                 break
         if name is None:
+            if is_json_mode():
+                json_error("Not in a project directory. Specify project name.", PROJECT_NOT_FOUND)
             console.print("[red]Not in a project directory. Specify project name.[/red]")
             raise typer.Exit(1)
 
     project_or_none = get_project(name)
     if project_or_none is None:
+        if is_json_mode():
+            json_error(f"Project '{name}' not found.", PROJECT_NOT_FOUND)
         console.print(f"[red]Project '{name}' not found.[/red]")
         raise typer.Exit(1)
 
@@ -84,7 +144,92 @@ def require_project(name: str | None = None) -> tuple[ProjectMetadata, Path]:
     return project_or_none, project_dir
 
 
-@app.command()
+def _resolve_port_conflicts(
+    project: ProjectMetadata, project_dir: Path, conflicts: dict[str, int]
+) -> None:
+    """Try to auto-resolve port conflicts or exit.
+
+    In --json/--yes mode, automatically finds alternative ports.
+    In interactive mode, asks the user.
+    """
+    if not conflicts:
+        return
+
+    if is_json_mode():
+        # Auto-resolve in agent mode
+        _auto_resolve_ports(project, project_dir, conflicts)
+        return
+
+    console.print("[red]Port conflict detected![/red]\n")
+    console.print("The following ports are already in use:")
+    for service, port in conflicts.items():
+        console.print(f"  {service}: {port}")
+
+    console.print("\n[yellow]This usually means:[/yellow]")
+    console.print("  1. Another breeze instance is running (run 'abm cleanup')")
+    console.print("  2. Another ABM project is running (check 'abm list')")
+    console.print("  3. Some other service is using these ports")
+
+    console.print("\n[cyan]Quick fixes:[/cyan]")
+    console.print("  Run: abm cleanup")
+    console.print("  Or: abm docker down <other-project>")
+    console.print("  Or: lsof -i :<port> to see what's using it")
+
+    if safe_confirm("\nTry to automatically find alternative ports?", default=True):
+        _auto_resolve_ports(project, project_dir, conflicts)
+    else:
+        raise typer.Exit(1)
+
+
+def _auto_resolve_ports(
+    project: ProjectMetadata, project_dir: Path, conflicts: dict[str, int]
+) -> None:
+    """Find alternative ports for conflicting services."""
+    from airflow_breeze_manager.constants import PORT_RANGES
+
+    new_ports = {}
+    all_existing = get_all_projects()
+    used_ports = {
+        service: {getattr(p.ports, service) for p in all_existing if p.name != project.name}
+        for service in ["webserver", "flower", "postgres", "mysql", "redis", "ssh"]
+    }
+
+    failed = []
+    for service in conflicts.keys():
+        min_port, max_port = PORT_RANGES[service]
+        alt_port = find_alternative_port(min_port, max_port, used_ports[service])
+        if alt_port:
+            new_ports[service] = alt_port
+        else:
+            failed.append(service)
+
+    if failed:
+        if is_json_mode():
+            json_error(
+                f"Could not find alternative ports for: {', '.join(failed)}",
+                PORT_CONFLICT,
+            )
+        console.print(f"\n[red]Could not find alternative ports for: {', '.join(failed)}[/red]")
+        console.print("Port ranges exhausted. Please clean up containers or adjust port ranges.")
+        raise typer.Exit(1)
+
+    # Update project ports
+    for service, port in new_ports.items():
+        setattr(project.ports, service, port)
+    project.save(project_dir)
+
+    if not is_json_mode():
+        console.print("\n[green]Updated ports:[/green]")
+        for service, port in new_ports.items():
+            console.print(f"  {service}: {port}")
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+
+@app.command(rich_help_panel="Core Commands")
 def init(
     airflow_repo: Annotated[
         str | None,
@@ -97,8 +242,12 @@ def init(
 ) -> None:
     """Initialize Airflow Breeze Manager."""
     if ABM_CONFIG_FILE.exists():
-        console.print("[yellow]ABM already initialized.[/yellow]")
         config = GlobalConfig.load(ABM_CONFIG_FILE)
+        if is_json_mode():
+            data = config.to_dict() if config else {}
+            data["already_initialized"] = True
+            json_success(data)
+        console.print("[yellow]ABM already initialized.[/yellow]")
         if config:
             console.print(f"   Airflow repo: {config.airflow_repo}")
             console.print(f"   Worktree base: {config.worktree_base}")
@@ -109,47 +258,56 @@ def init(
         # 1. Try current directory
         cwd = Path.cwd()
         if (cwd / ".git").exists() and (cwd / "airflow-core").exists():
-            console.print(f"[cyan]Detected Airflow repository in current directory: {cwd}[/cyan]")
-            if typer.confirm("Use this as the Airflow repository?", default=True):
+            if not is_json_mode():
+                console.print(f"[cyan]Detected Airflow repository in current directory: {cwd}[/cyan]")
+            if safe_confirm("Use this as the Airflow repository?", default=True):
                 airflow_repo = str(cwd)
 
         # 2. Fall back to default
         if airflow_repo is None:
             default_path = Path(DEFAULT_AIRFLOW_REPO).expanduser()
             if default_path.exists() and (default_path / ".git").exists():
-                console.print(f"[cyan]Found Airflow repository at default location: {default_path}[/cyan]")
-                if typer.confirm("Use this as the Airflow repository?", default=True):
+                if not is_json_mode():
+                    console.print(f"[cyan]Found Airflow repository at default location: {default_path}[/cyan]")
+                if safe_confirm("Use this as the Airflow repository?", default=True):
                     airflow_repo = str(default_path)
 
-        # 3. Ask user
+        # 3. Ask user / use default in agent mode
         if airflow_repo is None:
-            console.print("[yellow]Could not auto-detect Airflow repository.[/yellow]")
-            airflow_repo = typer.prompt("Enter path to Airflow repository", default=DEFAULT_AIRFLOW_REPO)
+            if not is_json_mode():
+                console.print("[yellow]Could not auto-detect Airflow repository.[/yellow]")
+            airflow_repo = safe_prompt("Enter path to Airflow repository", default=DEFAULT_AIRFLOW_REPO)
 
     if worktree_base is None:
         default_worktree = Path(DEFAULT_WORKTREE_BASE).expanduser()
-        console.print(f"[cyan]Worktrees will be created in: {default_worktree}[/cyan]")
-        if not typer.confirm("Use this location?", default=True):
-            worktree_base = typer.prompt("Enter base directory for worktrees", default=DEFAULT_WORKTREE_BASE)
+        if not is_json_mode():
+            console.print(f"[cyan]Worktrees will be created in: {default_worktree}[/cyan]")
+        if not safe_confirm("Use this location?", default=True):
+            worktree_base = safe_prompt("Enter base directory for worktrees", default=DEFAULT_WORKTREE_BASE)
         else:
             worktree_base = str(default_worktree)
 
     # Validate Airflow repo
     repo_path = Path(airflow_repo).expanduser().resolve()
     if not repo_path.exists():
+        if is_json_mode():
+            json_error(f"Directory does not exist: {repo_path}", INVALID_INPUT)
         console.print(f"[red]Directory does not exist: {repo_path}[/red]")
         raise typer.Exit(1)
 
     if not (repo_path / ".git").exists():
+        if is_json_mode():
+            json_error(f"Not a git repository: {repo_path}", INVALID_INPUT)
         console.print(f"[red]Not a git repository: {repo_path}[/red]")
         console.print("Expected to find .git directory")
         raise typer.Exit(1)
 
     # Check if it looks like Airflow
     if not (repo_path / "airflow-core").exists() and not (repo_path / "airflow").exists():
-        console.print("[yellow]Warning: This doesn't look like an Airflow repository[/yellow]")
-        console.print(f"Expected to find 'airflow-core' or 'airflow' directory in {repo_path}")
-        if not typer.confirm("Continue anyway?", default=False):
+        if not is_json_mode():
+            console.print("[yellow]Warning: This doesn't look like an Airflow repository[/yellow]")
+            console.print(f"Expected to find 'airflow-core' or 'airflow' directory in {repo_path}")
+        if not safe_confirm("Continue anyway?", default=False):
             raise typer.Exit(1)
 
     # Create directories
@@ -165,12 +323,15 @@ def init(
     )
     config.save(ABM_CONFIG_FILE)
 
-    console.print("✅ [green]Airflow Breeze Manager initialized![/green]")
+    if is_json_mode():
+        json_success(config.to_dict())
+
+    console.print("[green]Airflow Breeze Manager initialized![/green]")
     console.print(f"   Airflow repo: {repo_path}")
     console.print(f"   Worktree base: {worktree_base}")
 
 
-@app.command()
+@app.command(rich_help_panel="Core Commands")
 def add(
     name: Annotated[str, typer.Argument(help="Project name")],
     branch: Annotated[
@@ -201,12 +362,14 @@ def add(
     project_name = name.replace("/", "-")
 
     # Warn if name was changed
-    if project_name != name:
+    if project_name != name and not is_json_mode():
         console.print(f"[yellow]Note: Project name sanitized from '{name}' to '{project_name}'[/yellow]")
         console.print("[dim]Slashes in project names are not allowed (they create nested directories)[/dim]")
 
     # Check if project already exists
     if get_project(project_name):
+        if is_json_mode():
+            json_error(f"Project '{project_name}' already exists.", PROJECT_EXISTS)
         console.print(f"[red]Project '{project_name}' already exists.[/red]")
         raise typer.Exit(1)
 
@@ -216,20 +379,30 @@ def add(
 
     # Check if worktree already exists
     if worktree_path.exists():
+        if is_json_mode():
+            json_error(f"Worktree path already exists: {worktree_path}", WORKTREE_EXISTS)
         console.print(f"[red]Worktree path already exists: {worktree_path}[/red]")
         raise typer.Exit(1)
 
     # Check if branch exists
     if not git_branch_exists(repo_path, branch):
         if create_branch:
-            console.print(f"Creating new branch: {branch}")
+            if not is_json_mode():
+                console.print(f"Creating new branch: {branch}")
             run_command(["git", "branch", branch], cwd=repo_path)
         else:
+            if is_json_mode():
+                json_error(
+                    f"Branch '{branch}' does not exist. Use --create-branch to create it.",
+                    BRANCH_NOT_FOUND,
+                )
             console.print(f"[red]Branch '{branch}' does not exist. Use --create-branch to create it.[/red]")
             raise typer.Exit(1)
 
     # Check if worktree for branch already exists
     if git_worktree_exists(repo_path, branch):
+        if is_json_mode():
+            json_error(f"Worktree for branch '{branch}' already exists.", WORKTREE_EXISTS)
         console.print(f"[yellow]Worktree for branch '{branch}' already exists.[/yellow]")
         console.print("Remove existing worktree first: git worktree remove <path>")
         raise typer.Exit(1)
@@ -238,7 +411,8 @@ def add(
     ports = allocate_ports()
 
     # Create worktree
-    console.print(f"Creating worktree at {worktree_path}...")
+    if not is_json_mode():
+        console.print(f"Creating worktree at {worktree_path}...")
     run_command(["git", "worktree", "add", str(worktree_path), branch], cwd=repo_path)
 
     # Create project directory
@@ -383,7 +557,8 @@ fi
     if airflow_cursor_dir.exists():
         # Remove existing .cursor if it's a regular directory (shouldn't happen, but be safe)
         if worktree_cursor_link.exists() and not worktree_cursor_link.is_symlink():
-            console.print("[yellow]Warning: .cursor exists as a directory, not creating symlink[/yellow]")
+            if not is_json_mode():
+                console.print("[yellow]Warning: .cursor exists as a directory, not creating symlink[/yellow]")
         elif worktree_cursor_link.is_symlink():
             # Already a symlink, update it
             worktree_cursor_link.unlink()
@@ -391,17 +566,21 @@ fi
         else:
             # Create new symlink
             worktree_cursor_link.symlink_to(airflow_cursor_dir)
-            console.print(f"[dim]→ Created .cursor symlink to {airflow_cursor_dir}[/dim]")
-    else:
+            if not is_json_mode():
+                console.print(f"[dim]-> Created .cursor symlink to {airflow_cursor_dir}[/dim]")
+    elif not is_json_mode():
         console.print("[dim]Note: .cursor not found in main Airflow repo (it's gitignored)[/dim]")
 
-    console.print(f"✅ [green]Project '{project_name}' created successfully![/green]")
+    if is_json_mode():
+        json_success(project.to_rich_dict())
+
+    console.print(f"[green]Project '{project_name}' created successfully![/green]")
     console.print(f"   Branch: {branch}")
     console.print(f"   Worktree: {worktree_path}")
     console.print(f"   Webserver: http://localhost:{ports.webserver}")
 
 
-@app.command()
+@app.command(rich_help_panel="Core Commands")
 def adopt(
     worktree_path: Annotated[str, typer.Argument(help="Path to existing worktree to adopt")],
     name: Annotated[
@@ -435,12 +614,17 @@ def adopt(
     # Validate worktree belongs to configured Airflow repo
     is_valid, branch, error_msg = validate_airflow_worktree(worktree, Path(config.airflow_repo))
     if not is_valid:
+        if is_json_mode():
+            json_error(f"Invalid worktree: {error_msg}", INVALID_WORKTREE)
         console.print(f"[red]Invalid worktree: {error_msg}[/red]")
         raise typer.Exit(1)
 
     # Check if already managed by ABM (idempotent behavior)
     existing_project = resolve_project_from_path(worktree)
     if existing_project:
+        if is_json_mode():
+            proj, _ = require_project(existing_project)
+            json_success(proj.to_rich_dict())
         console.print(f"[yellow]Worktree is already managed as project '{existing_project}'[/yellow]")
         console.print("[dim]Nothing to do (idempotent)[/dim]")
         return
@@ -451,14 +635,17 @@ def adopt(
 
     # Check if project name already exists
     if get_project(project_name):
+        if is_json_mode():
+            json_error(f"Project '{project_name}' already exists.", PROJECT_EXISTS)
         console.print(f"[red]Project '{project_name}' already exists.[/red]")
         console.print("[yellow]Hint: Use --name to specify a different project name[/yellow]")
         raise typer.Exit(1)
 
     # Allocate ports
-    console.print(f"Adopting worktree: {worktree}")
-    console.print(f"Branch: {branch}")
-    console.print(f"Project name: {project_name}")
+    if not is_json_mode():
+        console.print(f"Adopting worktree: {worktree}")
+        console.print(f"Branch: {branch}")
+        console.print(f"Project name: {project_name}")
     ports = allocate_ports()
 
     # Create project directory
@@ -602,25 +789,57 @@ fi
 
     if airflow_cursor_dir.exists():
         if worktree_cursor_link.exists() and not worktree_cursor_link.is_symlink():
-            console.print("[yellow]Warning: .cursor exists as a directory, not creating symlink[/yellow]")
+            if not is_json_mode():
+                console.print("[yellow]Warning: .cursor exists as a directory, not creating symlink[/yellow]")
         elif worktree_cursor_link.is_symlink():
             worktree_cursor_link.unlink()
             worktree_cursor_link.symlink_to(airflow_cursor_dir)
         else:
             worktree_cursor_link.symlink_to(airflow_cursor_dir)
-            console.print(f"[dim]→ Created .cursor symlink to {airflow_cursor_dir}[/dim]")
+            if not is_json_mode():
+                console.print(f"[dim]-> Created .cursor symlink to {airflow_cursor_dir}[/dim]")
 
-    console.print(f"✅ [green]Worktree adopted as project '{project_name}'![/green]")
+    if is_json_mode():
+        json_success(project.to_rich_dict())
+
+    console.print(f"[green]Worktree adopted as project '{project_name}'![/green]")
     console.print(f"   Branch: {branch}")
     console.print(f"   Worktree: {worktree}")
     console.print(f"   Webserver: http://localhost:{ports.webserver}")
     console.print("[dim]Note: Worktree was not created by ABM and will be protected from removal[/dim]")
 
 
-@app.command()
+@app.command(rich_help_panel="Core Commands")
 def list() -> None:
     """List all projects."""
     projects = get_all_projects()
+
+    if is_json_mode():
+        # Detect current project
+        current_project_name = None
+        try:
+            cwd = Path.cwd()
+            for project in projects:
+                if cwd == Path(project.worktree_path) or cwd.is_relative_to(Path(project.worktree_path)):
+                    current_project_name = project.name
+                    break
+        except (ValueError, OSError):
+            pass
+
+        running_containers = get_running_containers()
+        project_list = []
+        for project in sorted(projects, key=lambda p: p.name):
+            d = project.to_rich_dict()
+            container_info = running_containers.get(project.name, {})
+            services = container_info.get("services", [])
+            is_start_airflow = container_info.get("is_start_airflow", False)
+            if services:
+                d["running"] = "airflow" if is_start_airflow else "shell"
+            else:
+                d["running"] = None
+            project_list.append(d)
+
+        json_success({"projects": project_list, "current_project": current_project_name})
 
     if not projects:
         console.print("No projects found. Create one with 'abm add <name>'")
@@ -654,7 +873,7 @@ def list() -> None:
     for project in sorted(projects, key=lambda p: p.name):
         flags = []
         if project.frozen:
-            flags.append("🧊")
+            flags.append("frozen")
 
         # PR link (clickable if linked)
         if project.pr_number:
@@ -666,7 +885,7 @@ def list() -> None:
         flags_str = " ".join(flags) if flags else "-"
 
         # Active indicator
-        active = "→" if project.name == current_project_name else ""
+        active = "->" if project.name == current_project_name else ""
 
         # Running status & API URL
         container_info = running_containers.get(project.name, {})
@@ -676,13 +895,13 @@ def list() -> None:
         if services:
             if is_start_airflow:
                 # Full Airflow environment (start-airflow with tmux)
-                running = "🟢 airflow"
+                running = "airflow"
                 # Make API port clickable when running
                 api_url = f"http://localhost:{project.ports.webserver}"
                 api_display = f"[link={api_url}]:{project.ports.webserver}[/link]"
             else:
                 # Just shell or other services
-                running = "🟡 shell"
+                running = "shell"
                 api_display = f":{project.ports.webserver}"
         else:
             running = "-"
@@ -705,7 +924,7 @@ def list() -> None:
     # Show footer with helpful info
     footer_parts = []
     if current_project_name:
-        footer_parts.append(f"→ Currently in: {current_project_name}")
+        footer_parts.append(f"-> Currently in: {current_project_name}")
 
     # Count running projects by type
     airflow_count = sum(1 for info in running_containers.values() if info.get("is_start_airflow"))
@@ -715,9 +934,9 @@ def list() -> None:
 
     status_parts = []
     if airflow_count > 0:
-        status_parts.append(f"🟢 {airflow_count} airflow")
+        status_parts.append(f"{airflow_count} airflow")
     if shell_count > 0:
-        status_parts.append(f"🟡 {shell_count} shell")
+        status_parts.append(f"{shell_count} shell")
 
     if status_parts:
         footer_parts.append(" | ".join(status_parts))
@@ -726,7 +945,7 @@ def list() -> None:
         console.print(f"\n[dim]{' | '.join(footer_parts)}[/dim]")
 
 
-@app.command()
+@app.command(rich_help_panel="Core Commands")
 def status(
     project_name: Annotated[
         str | None,
@@ -736,13 +955,26 @@ def status(
     """Show project status."""
     project, project_dir = require_project(project_name)
 
+    if is_json_mode():
+        data = project.to_rich_dict()
+        # Enrich with running state
+        running_containers = get_running_containers()
+        container_info = running_containers.get(project.name, {})
+        services = container_info.get("services", [])
+        is_start_airflow = container_info.get("is_start_airflow", False)
+        if services:
+            data["running"] = "airflow" if is_start_airflow else "shell"
+        else:
+            data["running"] = None
+        json_success(data)
+
     console.print(f"[bold cyan]{project.name}[/bold cyan]")
     console.print(f"  Branch: {project.branch}")
     console.print(f"  Worktree: {project.worktree_path}")
     console.print(f"  Backend: {project.backend}")
     console.print(f"  Python: {project.python_version}")
     console.print(f"  Created: {project.created_at}")
-    console.print(f"  Frozen: {'Yes 🧊' if project.frozen else 'No'}")
+    console.print(f"  Frozen: {'Yes' if project.frozen else 'No'}")
     if project.pr_number:
         console.print(f"  PR: #{project.pr_number}")
 
@@ -760,7 +992,7 @@ def status(
     console.print(f"  SSH: ssh -p {project.ports.ssh} airflow@localhost")
 
 
-@app.command()
+@app.command(rich_help_panel="Core Commands")
 def remove(
     project_name: Annotated[str, typer.Argument(help="Project name")],
     keep_docs: Annotated[
@@ -782,6 +1014,11 @@ def remove(
 
     # Protect adopted worktrees from accidental removal
     if not project.managed_worktree and not force:
+        if is_json_mode():
+            json_error(
+                f"Cannot remove adopted project '{project_name}' without --force",
+                PROJECT_NOT_FOUND,
+            )
         console.print(f"[red]Cannot remove adopted project '{project_name}' without --force[/red]")
         console.print("[yellow]This worktree was not created by ABM (it was adopted)[/yellow]")
         console.print(
@@ -797,14 +1034,15 @@ def remove(
         if delete_branch:
             msg += f" and DELETE branch '{project.branch}'"
         msg += "?"
-        confirm = typer.confirm(msg)
+        confirm = safe_confirm(msg)
         if not confirm:
             raise typer.Abort()
 
     worktree_path = Path(project.worktree_path)
 
     # Stop Docker containers by targeting this specific worktree
-    console.print("Stopping Docker containers...")
+    if not is_json_mode():
+        console.print("Stopping Docker containers...")
     stop_project_containers(str(worktree_path))
 
     # Remove symlinks (including .cursor)
@@ -815,10 +1053,12 @@ def remove(
         cursor_link = worktree_path / ".cursor"
         if cursor_link.is_symlink():
             cursor_link.unlink()
-            console.print("[dim]→ Removed .cursor symlink[/dim]")
+            if not is_json_mode():
+                console.print("[dim]-> Removed .cursor symlink[/dim]")
 
     # Remove worktree
-    console.print("Removing worktree...")
+    if not is_json_mode():
+        console.print("Removing worktree...")
     run_command(
         ["git", "worktree", "remove", str(worktree_path), "--force"],
         cwd=Path(config.airflow_repo),
@@ -827,15 +1067,17 @@ def remove(
 
     # Delete branch if requested
     if delete_branch:
-        console.print(f"[yellow]Deleting branch '{project.branch}'...[/yellow]")
+        if not is_json_mode():
+            console.print(f"[yellow]Deleting branch '{project.branch}'...[/yellow]")
         result = run_command(
             ["git", "branch", "-D", project.branch],
             cwd=Path(config.airflow_repo),
             check=False,
         )
         if result and result.returncode == 0:
-            console.print(f"[green]✓ Branch '{project.branch}' deleted[/green]")
-        else:
+            if not is_json_mode():
+                console.print(f"[green]Branch '{project.branch}' deleted[/green]")
+        elif not is_json_mode():
             console.print(f"[red]Failed to delete branch '{project.branch}'[/red]")
             console.print("[dim]The branch may not exist or may be currently checked out[/dim]")
 
@@ -848,13 +1090,17 @@ def remove(
                     shutil.rmtree(item)
                 else:
                     item.unlink()
-        console.print(f"✅ Project removed (kept PROJECT.md in {project_dir})")
+        if is_json_mode():
+            json_success({"project": project_name, "removed": True, "kept_docs": True})
+        console.print(f"Project removed (kept PROJECT.md in {project_dir})")
     else:
         shutil.rmtree(project_dir)
-        console.print(f"✅ Project '{project_name}' removed completely")
+        if is_json_mode():
+            json_success({"project": project_name, "removed": True, "kept_docs": False})
+        console.print(f"Project '{project_name}' removed completely")
 
 
-@app.command()
+@app.command(rich_help_panel="Core Commands")
 def disown(
     project_name: Annotated[
         str | None,
@@ -875,43 +1121,51 @@ def disown(
     project, project_dir = require_project(project_name)
 
     if not force:
-        confirm = typer.confirm(f"Remove ABM management of '{project.name}' (worktree will be kept)?")
+        confirm = safe_confirm(f"Remove ABM management of '{project.name}' (worktree will be kept)?")
         if not confirm:
             raise typer.Abort()
 
     worktree_path = Path(project.worktree_path)
 
     # Stop Docker containers
-    console.print("Stopping Docker containers...")
+    if not is_json_mode():
+        console.print("Stopping Docker containers...")
     stop_project_containers(str(worktree_path))
 
     # Remove symlinks
     if worktree_path.exists():
-        console.print("Removing ABM symlinks...")
+        if not is_json_mode():
+            console.print("Removing ABM symlinks...")
         remove_symlinks(worktree_path, SYMLINKED_FILES)
 
         # Also remove .cursor symlink if it exists
         cursor_link = worktree_path / ".cursor"
         if cursor_link.is_symlink():
             cursor_link.unlink()
-            console.print("[dim]→ Removed .cursor symlink[/dim]")
+            if not is_json_mode():
+                console.print("[dim]-> Removed .cursor symlink[/dim]")
 
         # Remove breeze config directory (ABM-specific)
         breeze_config_dir = worktree_path / "files" / "airflow-breeze-config"
         if breeze_config_dir.exists():
             shutil.rmtree(breeze_config_dir)
-            console.print("[dim]→ Removed breeze config directory[/dim]")
+            if not is_json_mode():
+                console.print("[dim]-> Removed breeze config directory[/dim]")
 
     # Remove project metadata directory
+    project_data = project.to_rich_dict()
     shutil.rmtree(project_dir)
 
-    console.print(f"✅ [green]Project '{project.name}' disowned[/green]")
+    if is_json_mode():
+        json_success({"project": project_data, "disowned": True, "worktree_preserved": str(worktree_path)})
+
+    console.print(f"[green]Project '{project.name}' disowned[/green]")
     console.print(f"   Worktree preserved at: {worktree_path}")
     console.print("   PROJECT.md moved to worktree (if it existed)")
     console.print("[dim]You can now manage this worktree manually or re-adopt it later[/dim]")
 
 
-@app.command()
+@app.command(rich_help_panel="Environment Commands")
 def shell(
     project_name: Annotated[
         str | None,
@@ -922,6 +1176,11 @@ def shell(
     project, project_dir = require_project(project_name)
 
     if project.frozen:
+        if is_json_mode():
+            json_error(
+                f"Project '{project.name}' is frozen. Thaw it first with 'abm thaw {project.name}'",
+                PROJECT_FROZEN,
+            )
         console.print(
             f"[yellow]Project '{project.name}' is frozen. Thaw it first with 'abm thaw {project.name}'[/yellow]"
         )
@@ -929,58 +1188,7 @@ def shell(
 
     # Check for port conflicts BEFORE starting breeze
     conflicts = get_conflicting_ports(project.ports)
-    if conflicts:
-        console.print("[red]⚠️  Port conflict detected![/red]\n")
-        console.print("The following ports are already in use:")
-        for service, port in conflicts.items():
-            console.print(f"  • {service}: {port}")
-
-        console.print("\n[yellow]This usually means:[/yellow]")
-        console.print("  1. Another breeze instance is running (run 'abm cleanup')")
-        console.print("  2. Another ABM project is running (check 'abm list')")
-        console.print("  3. Some other service is using these ports")
-
-        console.print("\n[cyan]Quick fixes:[/cyan]")
-        console.print("  • Run: abm cleanup")
-        console.print("  • Or: abm docker down <other-project>")
-        console.print("  • Or: lsof -i :<port> to see what's using it")
-
-        if typer.confirm("\nTry to automatically find alternative ports?", default=True):
-            # Try to find alternative ports
-            from airflow_breeze_manager.constants import PORT_RANGES
-
-            new_ports = {}
-            all_existing = get_all_projects()
-            used_ports = {
-                service: {getattr(p.ports, service) for p in all_existing if p.name != project.name}
-                for service in ["webserver", "flower", "postgres", "mysql", "redis", "ssh"]
-            }
-
-            failed = []
-            for service in conflicts.keys():
-                min_port, max_port = PORT_RANGES[service]
-                alt_port = find_alternative_port(min_port, max_port, used_ports[service])
-                if alt_port:
-                    new_ports[service] = alt_port
-                else:
-                    failed.append(service)
-
-            if failed:
-                console.print(f"\n[red]Could not find alternative ports for: {', '.join(failed)}[/red]")
-                console.print("Port ranges exhausted. Please clean up containers or adjust port ranges.")
-                raise typer.Exit(1)
-
-            # Update project ports
-            for service, port in new_ports.items():
-                setattr(project.ports, service, port)
-
-            project.save(project_dir)
-
-            console.print("\n[green]✅ Updated ports:[/green]")
-            for service, port in new_ports.items():
-                console.print(f"  • {service}: {port}")
-        else:
-            raise typer.Exit(1)
+    _resolve_port_conflicts(project, project_dir, conflicts)
 
     worktree_path = Path(project.worktree_path)
 
@@ -994,6 +1202,23 @@ def shell(
     # Set compose project name for container isolation
     compose_project = get_docker_compose_project_name(project.name)
     env["COMPOSE_PROJECT_NAME"] = compose_project
+
+    if is_json_mode():
+        # Don't launch shell — return the env vars and command for the agent
+        json_success({
+            "project": project.to_rich_dict(),
+            "worktree_path": str(worktree_path),
+            "env": port_env,
+            "compose_project_name": compose_project,
+            "breeze_command": [
+                "breeze",
+                "shell",
+                "--python",
+                project.python_version,
+                "--backend",
+                project.backend,
+            ],
+        })
 
     console.print(f"[green]Entering breeze shell for '{project.name}'...[/green]")
     console.print("[cyan]Configuration:[/cyan]")
@@ -1019,7 +1244,7 @@ def shell(
     )
 
 
-@app.command(name="exec")
+@app.command(name="exec", rich_help_panel="Environment Commands")
 def exec_command(
     project_name: Annotated[
         str | None,
@@ -1043,6 +1268,11 @@ def exec_command(
     project, _ = require_project(project_name)
 
     if project.frozen:
+        if is_json_mode():
+            json_error(
+                f"Project '{project.name}' is frozen. Thaw it first with 'abm thaw {project.name}'",
+                PROJECT_FROZEN,
+            )
         console.print(
             f"[yellow]Project '{project.name}' is frozen. Thaw it first with 'abm thaw {project.name}'[/yellow]"
         )
@@ -1052,6 +1282,11 @@ def exec_command(
     container_id = find_airflow_container(worktree_path)
 
     if not container_id:
+        if is_json_mode():
+            json_error(
+                f"No running Airflow container found for project '{project.name}'",
+                DOCKER_ERROR,
+            )
         console.print(f"[red]No running Airflow container found for project '{project.name}'[/red]")
         console.print("[dim]Start the container first with 'abm shell' or 'abm start-airflow'[/dim]")
         raise typer.Exit(1)
@@ -1068,13 +1303,33 @@ def exec_command(
     if exec_args:
         cmd_to_run.extend(exec_args)
 
+    if is_json_mode():
+        # In JSON mode, run without -it and capture output
+        cmd_to_run_no_tty = [
+            "docker",
+            "exec",
+            container_id,
+            "/opt/airflow/scripts/docker/entrypoint_exec.sh",
+        ]
+        if exec_args:
+            cmd_to_run_no_tty.extend(exec_args)
+        process = subprocess.run(cmd_to_run_no_tty, capture_output=True, text=True, check=False)
+        json_success({
+            "project": project.name,
+            "container_id": container_id,
+            "exit_code": process.returncode,
+            "stdout": process.stdout,
+            "stderr": process.stderr,
+            "command": cmd_to_run_no_tty,
+        })
+
     console.print(f"[green]Joining Airflow container for '{project.name}'...[/green]")
 
-    process = subprocess.run(cmd_to_run, check=False)
-    sys.exit(process.returncode)
+    exec_result = subprocess.run(cmd_to_run, check=False)
+    sys.exit(exec_result.returncode)
 
 
-@app.command()
+@app.command(rich_help_panel="Environment Commands")
 def run(
     project_name: Annotated[
         str | None,
@@ -1097,10 +1352,14 @@ def run(
     project, _ = require_project(project_name)
 
     if project.frozen:
+        if is_json_mode():
+            json_error(f"Project '{project.name}' is frozen. Thaw it first.", PROJECT_FROZEN)
         console.print(f"[yellow]Project '{project.name}' is frozen. Thaw it first.[/yellow]")
         raise typer.Exit(1)
 
     if not command:
+        if is_json_mode():
+            json_error("Specify a command to run", INVALID_INPUT)
         console.print("[red]Specify a command to run[/red]")
         raise typer.Exit(1)
 
@@ -1112,25 +1371,44 @@ def run(
     compose_project = get_docker_compose_project_name(project.name)
     env["COMPOSE_PROJECT_NAME"] = compose_project
 
+    breeze_cmd = [
+        "breeze",
+        "run",
+        "--python",
+        project.python_version,
+        "--backend",
+        project.backend,
+    ] + command
+
+    if is_json_mode():
+        # Use subprocess.run with capture_output instead of os.execvpe
+        process = subprocess.run(
+            breeze_cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=worktree_path,
+            env=env,
+        )
+        json_success({
+            "project": project.name,
+            "exit_code": process.returncode,
+            "stdout": process.stdout,
+            "stderr": process.stderr,
+            "command": breeze_cmd,
+        })
+
     # Run breeze run with project-specific python and backend
     os.chdir(worktree_path)
     os.execvpe(
         "breeze",
-        [
-            "breeze",
-            "run",
-            "--python",
-            project.python_version,
-            "--backend",
-            project.backend,
-        ]
-        + command,
+        breeze_cmd,
         env,
     )
 
 
 docker_app = typer.Typer(help="Docker commands", no_args_is_help=True)
-app.add_typer(docker_app, name="docker")
+app.add_typer(docker_app, name="docker", rich_help_panel="Environment Commands")
 
 
 @docker_app.command("up")
@@ -1148,12 +1426,16 @@ def docker_up(
     env.update(project.ports.to_env_dict(project_name=project.name))
     compose_project = get_docker_compose_project_name(project.name)
 
-    console.print(f"[green]Starting containers for '{project.name}'...[/green]")
+    if not is_json_mode():
+        console.print(f"[green]Starting containers for '{project.name}'...[/green]")
     run_command(
         ["docker", "compose", "--project-name", compose_project, "up", "-d"],
         cwd=worktree_path,
         env=env,
     )
+
+    if is_json_mode():
+        json_success({"project": project.name, "compose_project_name": compose_project, "action": "up"})
 
 
 @docker_app.command("down")
@@ -1167,12 +1449,16 @@ def docker_down(
     project, _ = require_project(project_name)
     worktree_path = Path(project.worktree_path)
 
-    console.print(f"[yellow]Stopping containers for '{project.name}'...[/yellow]")
+    if not is_json_mode():
+        console.print(f"[yellow]Stopping containers for '{project.name}'...[/yellow]")
     stop_project_containers(str(worktree_path))
+
+    if is_json_mode():
+        json_success({"project": project.name, "action": "down"})
 
 
 pr_app = typer.Typer(help="GitHub PR commands", no_args_is_help=True)
-app.add_typer(pr_app, name="pr")
+app.add_typer(pr_app, name="pr", rich_help_panel="Core Commands")
 
 
 @pr_app.command("link")
@@ -1187,7 +1473,11 @@ def pr_link(
     project, project_dir = require_project(project_name)
     project.pr_number = pr_number
     project.save(project_dir)
-    console.print(f"✅ Linked PR #{pr_number} to '{project.name}'")
+
+    if is_json_mode():
+        json_success(project.to_rich_dict())
+
+    console.print(f"Linked PR #{pr_number} to '{project.name}'")
 
 
 @pr_app.command("open")
@@ -1201,10 +1491,17 @@ def pr_open(
     project, _ = require_project(project_name)
 
     if not project.pr_number:
+        if is_json_mode():
+            json_error(f"No PR linked to '{project.name}'", INVALID_INPUT)
         console.print(f"[yellow]No PR linked to '{project.name}'[/yellow]")
         raise typer.Exit(1)
 
     url = f"https://github.com/apache/airflow/pull/{project.pr_number}"
+
+    if is_json_mode():
+        # Return URL instead of opening browser
+        json_success({"project": project.name, "pr_number": project.pr_number, "url": url})
+
     webbrowser.open(url)
     console.print(f"Opening PR #{project.pr_number}")
 
@@ -1220,10 +1517,14 @@ def pr_clear(
     project, project_dir = require_project(project_name)
     project.pr_number = None
     project.save(project_dir)
-    console.print(f"✅ Cleared PR association from '{project.name}'")
+
+    if is_json_mode():
+        json_success(project.to_rich_dict())
+
+    console.print(f"Cleared PR association from '{project.name}'")
 
 
-@app.command()
+@app.command(rich_help_panel="Maintenance")
 def freeze(
     project_name: Annotated[str, typer.Argument(help="Project name")],
     force: Annotated[
@@ -1235,11 +1536,13 @@ def freeze(
     project, project_dir = require_project(project_name)
 
     if project.frozen:
+        if is_json_mode():
+            json_success({"project": project.to_rich_dict(), "already_frozen": True})
         console.print(f"[yellow]Project '{project_name}' is already frozen[/yellow]")
         return
 
     if not force:
-        confirm = typer.confirm(f"Freeze project '{project_name}'? This will remove node_modules and .venv")
+        confirm = safe_confirm(f"Freeze project '{project_name}'? This will remove node_modules and .venv")
         if not confirm:
             raise typer.Abort()
 
@@ -1248,16 +1551,21 @@ def freeze(
     # Remove node_modules
     node_modules = worktree_path / "airflow-core" / "src" / "airflow" / "ui" / "node_modules"
     if node_modules.exists():
-        console.print("Removing node_modules...")
+        if not is_json_mode():
+            console.print("Removing node_modules...")
         shutil.rmtree(node_modules)
 
     # Mark as frozen
     project.frozen = True
     project.save(project_dir)
-    console.print(f"✅ [green]Project '{project_name}' frozen[/green]")
+
+    if is_json_mode():
+        json_success(project.to_rich_dict())
+
+    console.print(f"[green]Project '{project_name}' frozen[/green]")
 
 
-@app.command()
+@app.command(rich_help_panel="Maintenance")
 def thaw(
     project_name: Annotated[str, typer.Argument(help="Project name")],
 ) -> None:
@@ -1265,6 +1573,8 @@ def thaw(
     project, project_dir = require_project(project_name)
 
     if not project.frozen:
+        if is_json_mode():
+            json_success({"project": project.to_rich_dict(), "already_thawed": True})
         console.print(f"[yellow]Project '{project_name}' is not frozen[/yellow]")
         return
 
@@ -1273,20 +1583,31 @@ def thaw(
     # Reinstall node modules
     ui_path = worktree_path / "airflow-core" / "src" / "airflow" / "ui"
     if (ui_path / "package.json").exists():
-        console.print("Reinstalling node_modules...")
+        if not is_json_mode():
+            console.print("Reinstalling node_modules...")
         run_command(["npm", "ci"], cwd=ui_path)
 
     # Mark as thawed
     project.frozen = False
     project.save(project_dir)
-    console.print(f"✅ [green]Project '{project_name}' thawed[/green]")
+
+    if is_json_mode():
+        json_success(project.to_rich_dict())
+
+    console.print(f"[green]Project '{project_name}' thawed[/green]")
 
 
-@app.command()
+@app.command(rich_help_panel="Maintenance")
 def cleanup() -> None:
     """Clean up orphaned breeze containers."""
-    console.print("[cyan]Cleaning up breeze containers...[/cyan]")
-    cleanup_breeze_containers()
+    if not is_json_mode():
+        console.print("[cyan]Cleaning up breeze containers...[/cyan]")
+
+    count = cleanup_breeze_containers()
+
+    if is_json_mode():
+        json_success({"containers_cleaned": count})
+
     console.print("\n[dim]Tip: Run this if you get 'port already allocated' errors[/dim]")
 
 
@@ -1299,7 +1620,7 @@ def _get_project_names() -> builtins.list[str]:
         return []
 
 
-@app.command()
+@app.command(rich_help_panel="Maintenance")
 def setup_autocomplete(
     shell: Annotated[
         str | None,
@@ -1372,7 +1693,7 @@ def setup_autocomplete(
         # Using separate completion file
         if completion_file.exists():
             console.print(f"[yellow]Autocompletion already installed in {completion_file}[/yellow]")
-            if not typer.confirm("Reinstall anyway?"):
+            if not safe_confirm("Reinstall anyway?"):
                 raise typer.Exit(0)
     else:
         # Check in rc file
@@ -1380,7 +1701,7 @@ def setup_autocomplete(
             content = rc_file.read_text()
             if completion_marker in content:
                 console.print(f"[yellow]Autocompletion already installed in {rc_file}[/yellow]")
-                if not typer.confirm("Reinstall anyway?"):
+                if not safe_confirm("Reinstall anyway?"):
                     raise typer.Exit(0)
                 # Remove old completion from rc file
                 lines = [
@@ -1515,7 +1836,7 @@ for cmd in $project_commands
 end
 """)
 
-        console.print(f"[green]✓ Autocompletion installed to {completion_file}[/green]")
+        console.print(f"[green]Autocompletion installed to {completion_file}[/green]")
 
         # Add note about Oh-My-Zsh auto-loading
         if shell == "zsh" and "oh-my-zsh" in str(completion_file):
@@ -1560,9 +1881,9 @@ fi
                     if insert_pos > 0:
                         lines.insert(insert_pos, loader_code)
                         rc_file.write_text("\n".join(lines))
-                        console.print(f"[green]✓ Added completion loader to {rc_file}[/green]")
+                        console.print(f"[green]Added completion loader to {rc_file}[/green]")
 
-            console.print("\n[green]✓ Cleared completion cache[/green]")
+            console.print("\n[green]Cleared completion cache[/green]")
             console.print("\n[cyan]To activate:[/cyan]")
             console.print("  exec zsh")
             console.print("\n[dim]Or run: omz reload[/dim]")
@@ -1643,7 +1964,7 @@ compdef _abm abm
 """
             f.write(completion_script)
 
-        console.print(f"[green]✓ Autocompletion installed to {rc_file}[/green]")
+        console.print(f"[green]Autocompletion installed to {rc_file}[/green]")
         console.print("\n[cyan]To activate:[/cyan]")
         console.print(f"  source {rc_file}")
         console.print("\n[dim]Or restart your terminal[/dim]")
@@ -1654,7 +1975,7 @@ compdef _abm abm
     console.print("  abm remove <TAB>     # Shows project names")
 
 
-@app.command("start-airflow")
+@app.command("start-airflow", rich_help_panel="Environment Commands")
 def start_airflow(
     project_name: Annotated[
         str | None,
@@ -1665,6 +1986,11 @@ def start_airflow(
     project, project_dir = require_project(project_name)
 
     if project.frozen:
+        if is_json_mode():
+            json_error(
+                f"Project '{project.name}' is frozen. Thaw it first with 'abm thaw {project.name}'",
+                PROJECT_FROZEN,
+            )
         console.print(
             f"[yellow]Project '{project.name}' is frozen. Thaw it first with 'abm thaw {project.name}'[/yellow]"
         )
@@ -1672,58 +1998,7 @@ def start_airflow(
 
     # Check for port conflicts BEFORE starting
     conflicts = get_conflicting_ports(project.ports)
-    if conflicts:
-        console.print("[red]⚠️  Port conflict detected![/red]\n")
-        console.print("The following ports are already in use:")
-        for service, port in conflicts.items():
-            console.print(f"  • {service}: {port}")
-
-        console.print("\n[yellow]This usually means:[/yellow]")
-        console.print("  1. Another breeze instance is running (run 'abm cleanup')")
-        console.print("  2. Another ABM project is running (check 'abm list')")
-        console.print("  3. Some other service is using these ports")
-
-        console.print("\n[cyan]Quick fixes:[/cyan]")
-        console.print("  • Run: abm cleanup")
-        console.print("  • Or: abm docker down <other-project>")
-        console.print("  • Or: lsof -i :<port> to see what's using it")
-
-        if typer.confirm("\nTry to automatically find alternative ports?", default=True):
-            # Try to find alternative ports
-            from airflow_breeze_manager.constants import PORT_RANGES
-
-            new_ports = {}
-            all_existing = get_all_projects()
-            used_ports = {
-                service: {getattr(p.ports, service) for p in all_existing if p.name != project.name}
-                for service in ["webserver", "flower", "postgres", "mysql", "redis", "ssh"]
-            }
-
-            failed = []
-            for service in conflicts.keys():
-                min_port, max_port = PORT_RANGES[service]
-                alt_port = find_alternative_port(min_port, max_port, used_ports[service])
-                if alt_port:
-                    new_ports[service] = alt_port
-                else:
-                    failed.append(service)
-
-            if failed:
-                console.print(f"\n[red]Could not find alternative ports for: {', '.join(failed)}[/red]")
-                console.print("Port ranges exhausted. Please clean up containers or adjust port ranges.")
-                raise typer.Exit(1)
-
-            # Update project ports
-            for service, port in new_ports.items():
-                setattr(project.ports, service, port)
-
-            project.save(project_dir)
-
-            console.print("\n[green]✅ Updated ports:[/green]")
-            for service, port in new_ports.items():
-                console.print(f"  • {service}: {port}")
-        else:
-            raise typer.Exit(1)
+    _resolve_port_conflicts(project, project_dir, conflicts)
 
     worktree_path = Path(project.worktree_path)
 
@@ -1737,6 +2012,35 @@ def start_airflow(
     # Set compose project name for container isolation
     compose_project = get_docker_compose_project_name(project.name)
     env["COMPOSE_PROJECT_NAME"] = compose_project
+
+    breeze_cmd = [
+        "breeze",
+        "start-airflow",
+        "--python",
+        project.python_version,
+        "--backend",
+        project.backend,
+    ]
+
+    if is_json_mode():
+        # Launch detached via subprocess.Popen, return PID + URLs
+        process = subprocess.Popen(
+            breeze_cmd,
+            cwd=worktree_path,
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        json_success({
+            "project": project.to_rich_dict(),
+            "pid": process.pid,
+            "urls": {
+                "webserver": f"http://localhost:{project.ports.webserver}",
+                "flower": f"http://localhost:{project.ports.flower}",
+            },
+            "compose_project_name": compose_project,
+            "breeze_command": breeze_cmd,
+        })
 
     console.print(f"[green]Starting Airflow for '{project.name}'...[/green]")
     console.print("[cyan]Services:[/cyan]")
@@ -1752,14 +2056,7 @@ def start_airflow(
     os.chdir(worktree_path)
     os.execvpe(
         "breeze",
-        [
-            "breeze",
-            "start-airflow",
-            "--python",
-            project.python_version,
-            "--backend",
-            project.backend,
-        ],
+        breeze_cmd,
         env,
     )
 
