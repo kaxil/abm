@@ -50,10 +50,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 - Comprehensive README with all features
-- Quick start guide (QUICKSTART.md)
-- Real-world examples (EXAMPLES.md)
-- Contributing guide (CONTRIBUTING.md)
-- Project summary (PROJECT_SUMMARY.md)
 - AI assistant context (CLAUDE.md)
 
 [Unreleased]: https://github.com/kaxil/abm/compare/v0.2.0...HEAD

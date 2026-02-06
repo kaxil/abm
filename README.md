@@ -97,10 +97,7 @@ ABM solves this by giving each feature branch its own **complete isolated enviro
 ### Using uvx (Recommended)
 
 ```bash
-# Quick install with provided script
-curl -sSL https://raw.githubusercontent.com/kaxil/abm/main/install.sh | bash
-
-# Or manually with uv
+# Install with uv
 uv tool install airflow-breeze-manager
 
 # Or run directly without installing
@@ -867,8 +864,6 @@ abm thaw my-feature
 # Then use normally
 abm shell my-feature
 ```
-
-Contributions welcome! This is a tool for Airflow developers by Airflow developers.
 
 ### Development Setup
 
