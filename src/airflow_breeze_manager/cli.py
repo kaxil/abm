@@ -70,11 +70,13 @@ app = typer.Typer(
     no_args_is_help=True,
     rich_markup_mode="rich",
     epilog="[dim]EXAMPLES[/dim]\n\n"
+    "  abm shell proj[dim]                      # interactive shell (ports forwarded)[/dim]\n\n"
+    "  abm run proj pytest tests/[dim]          # one-off command (no ports, auto-cleanup)[/dim]\n\n"
+    "  abm start-airflow proj[dim]              # interactive Airflow (mprocs, needs TTY)[/dim]\n\n"
+    "  abm start-airflow proj --headless[dim]   # headless Airflow (no TTY needed)[/dim]\n\n"
+    "  abm stop-airflow proj[dim]               # stop headless Airflow[/dim]\n\n"
     "  abm --json list[dim]                     # projects as JSON[/dim]\n\n"
     "  abm --json status my-project[dim]        # details + running state[/dim]\n\n"
-    "  abm --json add feat --create-branch[dim] # no prompts[/dim]\n\n"
-    "  abm --json run proj pytest tests/[dim]   # captured stdout + exit code[/dim]\n\n"
-    "  abm --json shell proj[dim]               # env vars without launching[/dim]\n\n"
     "  abm --yes remove proj -f[dim]            # skip confirmation[/dim]",
 )
 
@@ -1181,7 +1183,15 @@ def shell(
         typer.Argument(help="Extra arguments passed to breeze shell"),
     ] = None,
 ) -> None:
-    """Enter breeze shell for a project."""
+    """Enter breeze shell for a project.
+
+    Opens a long-running container with full environment initialization and port
+    forwarding. Use for interactive development or any workflow that needs
+    host-accessible ports (API, database, etc.).
+
+    Use 'abm run' instead for one-off commands (tests, scripts) that don't need
+    ports or environment initialization.
+    """
     project, project_dir = require_project(project_name)
 
     if project.frozen:
@@ -1367,15 +1377,24 @@ def run(
         str | None,
         typer.Argument(help="Project name (auto-detected if in project directory)"),
     ] = None,
+    forward_ports: Annotated[
+        bool,
+        typer.Option("--forward-ports", help="Forward container ports to host."),
+    ] = False,
 ) -> None:
-    """Run an ad-hoc command in the breeze environment (equivalent to 'breeze run').
+    """Run a one-off command in the breeze environment and exit.
+
+    Uses 'breeze run' under the hood: skips environment initialization and
+    auto-cleans up after exit. Ideal for tests, scripts, and CI. Port
+    forwarding is off by default but can be enabled with --forward-ports.
+
+    Use 'abm shell' instead when you need host-accessible ports or full
+    environment initialization (e.g. running Airflow services).
 
     Examples:
         abm run my-project pytest tests/
         abm run pytest tests/                                          # auto-detect project
         abm run python -c "import airflow; print(airflow.__version__)"  # flags pass through
-
-    This uses 'breeze run' under the hood to execute commands without entering an interactive shell.
     """
     # Build the command from extra args captured by Click context
     command: builtins.list[str] = builtins.list(ctx.args)
@@ -1419,7 +1438,10 @@ def run(
         project.python_version,
         "--backend",
         project.backend,
-    ] + command
+    ]
+    if forward_ports:
+        breeze_cmd.append("--forward-ports")
+    breeze_cmd.extend(command)
 
     if is_json_mode():
         # Use subprocess.run with capture_output instead of os.execvpe
@@ -2105,7 +2127,15 @@ def start_airflow(
         typer.Argument(help="Extra arguments passed to breeze start-airflow"),
     ] = None,
 ) -> None:
-    """Start Airflow in breeze (equivalent to 'breeze start-airflow')."""
+    """Start Airflow in breeze (equivalent to 'breeze start-airflow').
+
+    By default, launches mprocs (terminal multiplexer) which requires a TTY.
+    Use --headless to run without a TTY via 'airflow standalone' inside
+    'breeze shell'. Headless mode is auto-enabled in --json mode or when
+    no TTY is detected (e.g. piped input, AI agents).
+
+    Use 'abm stop-airflow' to stop a headless instance.
+    """
     project, project_dir = require_project(project_name)
 
     if project.frozen:
