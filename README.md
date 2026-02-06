@@ -30,6 +30,7 @@ Manage multiple Airflow development environments with isolated breeze instances 
     - [`PROJECT.md`](#projectmd)
     - [`CLAUDE.md`](#claudemd)
 - [Commands Reference](#commands-reference)
+  - [Global Flags](#global-flags)
   - [Core Commands](#core-commands)
     - [`abm init`](#abm-init)
     - [`abm add <name>`](#abm-add-name)
@@ -39,6 +40,7 @@ Manage multiple Airflow development environments with isolated breeze instances 
     - [`abm status [project]`](#abm-status-project)
     - [`abm shell [project]`](#abm-shell-project)
     - [`abm run [project] <command...>`](#abm-run-project-command)
+    - [`abm exec [project] [command...]`](#abm-exec-project-command)
     - [`abm remove <project>`](#abm-remove-project)
   - [Docker Commands](#docker-commands)
     - [`abm docker up [project]`](#abm-docker-up-project)
@@ -52,6 +54,9 @@ Manage multiple Airflow development environments with isolated breeze instances 
     - [`abm thaw <project>`](#abm-thaw-project)
     - [`abm setup-autocomplete`](#abm-setup-autocomplete)
     - [`abm start-airflow [project]`](#abm-start-airflow-project)
+    - [`abm stop-airflow [project]`](#abm-stop-airflow-project)
+    - [`abm api <endpoint>`](#abm-api-endpoint)
+    - [`abm cleanup`](#abm-cleanup)
 - [Configuration](#configuration)
   - [Environment Variables](#environment-variables)
   - [Files & Directories](#files--directories)
@@ -287,6 +292,21 @@ Each project has two documentation files that persist across worktree removal/re
 
 ## Commands Reference
 
+### Global Flags
+
+These flags must be placed **before** the command name:
+
+```bash
+abm --json list                    # Output as JSON (implies --yes)
+abm --json status my-project       # Project details as JSON
+abm --yes remove proj -f           # Skip all confirmation prompts
+```
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Output as JSON. Implies `--yes` (non-interactive). Useful for scripting and AI agents. |
+| `--yes`, `-y` | Skip all confirmation prompts. |
+
 ### Core Commands
 
 #### `abm init`
@@ -315,7 +335,7 @@ Options:
   -b, --branch TEXT          Git branch name (defaults to project name)
   -d, --description TEXT     Project description
   --backend TEXT             Database backend (default: sqlite)
-  --python-version TEXT      Python version (default: 3.11)
+  --python-version TEXT      Python version (default: 3.12)
   --create-branch            Create new branch if it doesn't exist
 ```
 
@@ -330,7 +350,7 @@ Options:
   -n, --name TEXT            Project name (defaults to branch name)
   -d, --description TEXT     Project description
   --backend TEXT             Database backend (default: sqlite)
-  --python-version TEXT      Python version (default: 3.11)
+  --python-version TEXT      Python version (default: 3.12)
 ```
 
 **Use cases:**
@@ -473,6 +493,16 @@ Run a breeze command for a project.
 ```bash
 abm run my-feature pytest tests/unit_tests/
 abm run my-feature mypy providers/amazon/
+```
+
+#### `abm exec [project] [command...]`
+
+Join the interactive shell of a running Airflow container (started via `abm shell` or `abm start-airflow`).
+
+```bash
+abm exec                           # Auto-detect project, default shell
+abm exec my-project bash           # Specific project
+abm exec python -c "print('hi')"  # Auto-detect project, run command
 ```
 
 #### `abm remove <project>`
@@ -622,6 +652,24 @@ abm start-airflow my-feature
 # Or auto-detect from current directory
 cd ~/code/airflow-worktree/my-feature
 abm start-airflow
+
+# With options
+abm start-airflow my-feature --executor CeleryExecutor --load-example-dags
+abm start-airflow my-feature --headless  # No TTY needed (for CI/agents)
+abm start-airflow my-feature --dev-mode --mount-ui-dist  # UI development
+```
+
+```bash
+Options:
+  --dev-mode                       Enable dev mode for UI development
+  --skip-assets-compilation        Skip assets compilation for faster startup
+  --executor TEXT                  Executor type (e.g., LocalExecutor, CeleryExecutor, EdgeExecutor)
+  -e, --load-example-dags         Load example DAGs
+  --create-all-roles              Create all roles (for FabAuthManager testing)
+  --mount-ui-dist                 Mount UI dist for UI development
+  -t, --terminal-multiplexer TEXT Terminal multiplexer (mprocs or tmux)
+  --debug-components TEXT          Components to enable remote debugging for
+  --headless                       Run without TTY (auto-enabled in --json mode)
 ```
 
 **What it does:**
@@ -629,10 +677,61 @@ abm start-airflow
 - Uses isolated ports for the project
 - Automatically detects and resolves port conflicts
 - Runs in foreground (Ctrl+C to stop)
+- Headless mode auto-enabled when no TTY is available or in `--json` mode; use `abm stop-airflow` to stop
 
 **Access services:**
-- Webserver: http://localhost:28080 (or your project's port)
-- Flower: http://localhost:25555 (or your project's port)
+- Webserver: http://localhost:28180 (or your project's port)
+- Flower: http://localhost:25655 (or your project's port)
+
+#### `abm stop-airflow [project]`
+
+Stop a running Airflow instance for a project.
+
+```bash
+abm stop-airflow my-feature
+
+# Or auto-detect from current directory
+abm stop-airflow
+```
+
+#### `abm api <endpoint>`
+
+Make direct requests to an ABM project's Airflow REST API (similar to `gh api` for GitHub). The API version prefix (`/api/v1` or `/api/v2`) is auto-detected.
+
+```bash
+abm api dags                                    # GET /api/v1/dags
+abm api dags/my_dag                             # GET /api/v1/dags/my_dag
+abm api health --raw                            # GET /health (no version prefix)
+abm api dags -F limit=10                        # GET with query params
+abm api dags/my_dag -X PATCH -F is_paused=true  # PATCH with typed fields
+abm api variables -X POST -f key=test -f value=hello
+abm api dags -i                                 # Include HTTP headers
+abm api ls                                      # List available endpoints
+abm api ls --filter variable                    # Filter endpoints
+```
+
+```bash
+Options:
+  -p, --project TEXT         Project name (auto-detected if in project directory)
+  -X, --method TEXT          HTTP method (default: GET)
+  -F, --field TEXT           Typed field (key=value, auto-coerces types)
+  -f, --raw-field TEXT       Raw string field (key=value, always string)
+  -H, --header TEXT          Additional header (key:value)
+  --body TEXT                Raw JSON body
+  -i, --include              Include HTTP status and headers in output
+  --raw                      Use endpoint as-is without /api/vX prefix
+  -U, --username TEXT        Airflow username (default: airflow)
+  -P, --password TEXT        Airflow password (default: airflow)
+  --filter TEXT              Filter pattern for 'ls' subcommand
+```
+
+#### `abm cleanup`
+
+Clean up orphaned breeze containers that are no longer associated with an active project.
+
+```bash
+abm cleanup
+```
 
 ## Configuration
 

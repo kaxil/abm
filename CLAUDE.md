@@ -14,15 +14,21 @@ This file provides guidance to Claude Code when working with this repository.
 - **PROJECT.md**: Branch-specific documentation that survives worktree removal
 - **PR Tracking**: Link GitHub PRs to projects
 - **Freeze/Thaw**: Save disk space by removing/restoring dependencies
+- **REST API Client**: `abm api` command for direct Airflow API access (auto-detects v1/v2)
+- **JSON/Agent Mode**: `--json` flag for non-interactive/automation use
+- **Shell Autocomplete**: Tab completion for bash/zsh/fish
 
 ## Architecture
 
 ### Components
 
 1. **CLI** (`cli.py`): Main entry point using Typer
-2. **Models** (`models.py`): Data models for projects and configuration
-3. **Utils** (`utils.py`): Helper functions for git, docker, and file operations
-4. **Constants** (`constants.py`): Configuration defaults and port ranges
+2. **CLI Helpers** (`cli_helpers.py`): Container management and helper functions
+3. **API** (`api.py`): Airflow REST API client (version detection, bearer tokens, OpenAPI)
+4. **Models** (`models.py`): Data models for projects and configuration
+5. **Utils** (`utils.py`): Helper functions for git, docker, and file operations
+6. **Output** (`output.py`): JSON/agent mode output and user prompts
+7. **Constants** (`constants.py`): Configuration defaults and port ranges
 
 ### Data Flow
 
@@ -78,10 +84,13 @@ Each project uses a unique `COMPOSE_PROJECT_NAME`:
 ```
 src/airflow_breeze_manager/
 ├── __init__.py          # Package info
-├── cli.py              # 500+ lines - main CLI commands
-├── constants.py        # 80 lines - configuration
-├── models.py           # 150 lines - data models
-└── utils.py            # 150 lines - utilities
+├── api.py              # Airflow REST API client
+├── cli.py              # Main CLI commands
+├── cli_helpers.py      # Container management helpers
+├── constants.py        # Configuration defaults and port ranges
+├── models.py           # Data models (ProjectMetadata, GlobalConfig)
+├── output.py           # JSON/agent mode output and prompts
+└── utils.py            # Git, docker, and file utilities
 ```
 
 ### Testing
@@ -95,7 +104,7 @@ src/airflow_breeze_manager/
 
 - **typer**: CLI framework with rich formatting
 - **rich**: Terminal formatting and tables
-- Standard library only for core functionality
+- **docker**: Docker SDK for container management
 
 ### Build System
 
@@ -143,10 +152,14 @@ env = os.environ.copy()
 env.update({
     "WEB_HOST_PORT": "28181",
     "FLOWER_HOST_PORT": "25656",
+    "POSTGRES_HOST_PORT": "25534",
+    "MYSQL_HOST_PORT": "23407",
+    "REDIS_HOST_PORT": "26480",
+    "SSH_PORT": "12423",
     "MSSQL_HOST_PORT": "21534",
     "RABBITMQ_HOST_PORT": "25773",
-    # ... other ports
-    "COMPOSE_PROJECT_NAME": "abm-my-feature"
+    "COMPOSE_PROJECT_NAME": "abm-my-feature",
+    "AIRFLOW__API__INSTANCE_NAME": "ABM: my-feature",
 })
 os.execvpe("breeze", ["breeze", "shell"], env)
 ```
@@ -185,8 +198,6 @@ Potential improvements:
 - [ ] Custom port ranges via config
 - [ ] Support for multiple Airflow repos
 - [ ] Database snapshot/restore
-- [ ] Integration with GitHub CLI for PR management
-- [ ] Shell completion scripts
 - [ ] Project templates
 - [ ] Bulk operations (freeze/thaw all)
 
