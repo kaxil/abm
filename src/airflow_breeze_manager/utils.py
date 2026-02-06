@@ -264,6 +264,39 @@ def find_alternative_port(start_port: int, max_port: int, used_ports: set[int]) 
     return None
 
 
+def check_webserver_health(port: int, timeout: float = 1.0) -> str:
+    """Check if the Airflow webserver is reachable on the given port.
+
+    Probes /api/v2/version then /api/v1/version without auth headers.
+    Treats 200, 401, and 403 as healthy (server is responding to HTTP
+    requests — 401/403 just means auth is required).
+
+    Uses a short timeout (default 1s) since this targets localhost only.
+
+    Returns:
+        HEALTH_HEALTHY or HEALTH_UNHEALTHY constant.
+    """
+    import urllib.error
+    import urllib.request
+
+    from airflow_breeze_manager.constants import HEALTH_HEALTHY, HEALTH_UNHEALTHY
+
+    for version in ("v2", "v1"):
+        url = f"http://localhost:{port}/api/{version}/version"
+        req = urllib.request.Request(url)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if resp.status in (200, 401, 403):
+                    return HEALTH_HEALTHY
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                return HEALTH_HEALTHY
+        except (urllib.error.URLError, OSError):
+            continue
+
+    return HEALTH_UNHEALTHY
+
+
 def stop_project_containers(worktree_path: str) -> None:
     """Stop all Docker containers for a specific ABM project."""
     import docker

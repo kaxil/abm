@@ -66,6 +66,15 @@ SYMLINKED_FILES = [
 HEADLESS_READY_TIMEOUT = 180  # seconds to wait for Airflow to become ready
 HEADLESS_POLL_INTERVAL = 3  # seconds between readiness polls
 
+# Health status values (used by status/list commands)
+HEALTH_HEALTHY = "healthy"
+HEALTH_UNHEALTHY = "unhealthy"
+HEALTH_NOT_RUNNING = "not_running"
+HEALTH_NOT_APPLICABLE = "not_applicable"
+
+# Bearer token settings
+TOKEN_MAX_AGE = 300  # seconds before cached token is considered stale (5 minutes)
+
 # Breeze environment variable prefixes that should be isolated per project
 BREEZE_ENV_PREFIXES = [
     "WEB_HOST_PORT",

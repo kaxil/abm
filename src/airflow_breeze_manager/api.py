@@ -4,16 +4,80 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
+
+from airflow_breeze_manager.constants import TOKEN_MAX_AGE
+
+# Sentinel: /auth/token returned 404 → Airflow 2, no point retrying
+_NOT_AVAILABLE = "NOT_AVAILABLE"
 
 
 def _build_auth_header(username: str, password: str) -> str:
     """Build Basic Auth header value."""
     credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
     return f"Basic {credentials}"
+
+
+# Bearer token cache: keyed by (base_url, username, password)
+# Values are (token_string, timestamp) or (_NOT_AVAILABLE, timestamp).
+_token_cache: dict[tuple[str, str, str], tuple[str, float]] = {}
+
+
+def clear_token_cache() -> None:
+    """Clear the bearer token cache (for testing)."""
+    _token_cache.clear()
+
+
+def _get_bearer_token(
+    base_url: str,
+    username: str,
+    password: str,
+    timeout: float = 10.0,
+    _force_refresh: bool = False,
+) -> str | None:
+    """Get a JWT bearer token from Airflow 3's /auth/token endpoint.
+
+    Returns:
+        The access_token string on success.
+        None if the endpoint returned 404 (Airflow 2 — no JWT support)
+            or on connection/request error.
+
+    Caches results with a TTL of TOKEN_MAX_AGE seconds. A 404 is also cached
+    (as _NOT_AVAILABLE) so we don't re-probe Airflow 2 instances every call.
+    """
+    cache_key = (base_url, username, password)
+
+    if not _force_refresh and cache_key in _token_cache:
+        cached_value, cached_at = _token_cache[cache_key]
+        if time.monotonic() - cached_at < TOKEN_MAX_AGE:
+            return None if cached_value == _NOT_AVAILABLE else cached_value
+        # Expired — fall through to refresh
+        del _token_cache[cache_key]
+
+    url = f"{base_url}/auth/token"
+    body = urllib.parse.urlencode({"username": username, "password": password}).encode()
+
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            data = json.loads(response.read())
+            token = data.get("access_token")
+            if token:
+                _token_cache[cache_key] = (token, time.monotonic())
+            return token
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            # Airflow 2 — cache so we don't retry
+            _token_cache[cache_key] = (_NOT_AVAILABLE, time.monotonic())
+        return None
+    except (urllib.error.URLError, OSError):
+        return None
 
 
 def make_request(
@@ -65,8 +129,17 @@ def make_request(
 
     req = urllib.request.Request(url, data=data, method=method)
 
-    # Set headers
-    req.add_header("Authorization", _build_auth_header(username, password))
+    # Set headers — use Bearer token for v2 (Airflow 3), Basic auth for v1 (Airflow 2)
+    use_bearer = api_version == "v2" and not raw_endpoint
+    if use_bearer:
+        token = _get_bearer_token(base_url, username, password, timeout=timeout)
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        else:
+            # Fallback to Basic auth if token retrieval fails
+            req.add_header("Authorization", _build_auth_header(username, password))
+    else:
+        req.add_header("Authorization", _build_auth_header(username, password))
     req.add_header("Accept", "application/json")
     if data is not None:
         req.add_header("Content-Type", "application/json")
@@ -74,6 +147,28 @@ def make_request(
         for key, value in headers.items():
             req.add_header(key, value)
 
+    result = _do_request(req, timeout)
+
+    # Retry once with a fresh token if we got 401 on a Bearer-auth request
+    # (handles expired tokens without requiring the caller to know about it)
+    if result["status_code"] == 401 and use_bearer and token:
+        new_token = _get_bearer_token(base_url, username, password, timeout=timeout, _force_refresh=True)
+        if new_token and new_token != token:
+            retry_req = urllib.request.Request(req.full_url, data=req.data, method=req.get_method())
+            retry_req.add_header("Authorization", f"Bearer {new_token}")
+            retry_req.add_header("Accept", "application/json")
+            if data is not None:
+                retry_req.add_header("Content-Type", "application/json")
+            if headers:
+                for key, value in headers.items():
+                    retry_req.add_header(key, value)
+            result = _do_request(retry_req, timeout)
+
+    return result
+
+
+def _do_request(req: urllib.request.Request, timeout: float) -> dict[str, Any]:
+    """Execute an HTTP request and return a normalized result dict."""
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             body_bytes = response.read()
@@ -111,9 +206,10 @@ def detect_api_version(
     password: str = "airflow",
     timeout: float = 5.0,
 ) -> str:
-    """Detect Airflow API version by probing endpoints.
+    """Detect Airflow API version by probing version endpoints.
 
     Tries /api/v2/version first (Airflow 3.x), falls back to /api/v1/version (Airflow 2.x).
+    Treats 200, 401, and 403 as "this version exists" (server is responding).
 
     Returns:
         "v2" or "v1"
@@ -127,7 +223,8 @@ def detect_api_version(
             password=password,
             timeout=timeout,
         )
-        if result["status_code"] == 200:
+        # 200 = success, 401/403 = server is alive but needs auth (Airflow 3 with JWT)
+        if result["status_code"] in (200, 401, 403):
             return version
 
     # Default to v1 if neither responds

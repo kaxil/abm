@@ -346,6 +346,80 @@ def test_resolve_project_from_path() -> None:
             assert result is None
 
 
+def test_check_webserver_health_healthy_200() -> None:
+    """Test health check returns healthy on 200 response."""
+    from unittest.mock import MagicMock, patch
+
+    from airflow_breeze_manager.utils import check_webserver_health
+
+    mock_response = MagicMock()
+    mock_response.status = 200
+    mock_response.__enter__ = lambda s: s
+    mock_response.__exit__ = MagicMock(return_value=False)
+
+    with patch("urllib.request.urlopen", return_value=mock_response):
+        result = check_webserver_health(28180)
+
+    assert result == "healthy"
+
+
+def test_check_webserver_health_healthy_on_401() -> None:
+    """Test health check returns healthy on 401 (server alive, needs auth)."""
+    import urllib.error
+    from unittest.mock import patch
+
+    from airflow_breeze_manager.utils import check_webserver_health
+
+    error = urllib.error.HTTPError(
+        "http://localhost:28180/api/v2/version",
+        401,
+        "Unauthorized",
+        {},
+        None,
+    )
+
+    with patch("urllib.request.urlopen", side_effect=error):
+        result = check_webserver_health(28180)
+
+    assert result == "healthy"
+
+
+def test_check_webserver_health_healthy_on_403() -> None:
+    """Test health check returns healthy on 403 (server alive, forbidden)."""
+    import urllib.error
+    from unittest.mock import patch
+
+    from airflow_breeze_manager.utils import check_webserver_health
+
+    error = urllib.error.HTTPError(
+        "http://localhost:28180/api/v2/version",
+        403,
+        "Forbidden",
+        {},
+        None,
+    )
+
+    with patch("urllib.request.urlopen", side_effect=error):
+        result = check_webserver_health(28180)
+
+    assert result == "healthy"
+
+
+def test_check_webserver_health_unhealthy_on_connection_error() -> None:
+    """Test health check returns unhealthy when server is unreachable."""
+    import urllib.error
+    from unittest.mock import patch
+
+    from airflow_breeze_manager.utils import check_webserver_health
+
+    error = urllib.error.URLError("Connection refused")
+
+    with patch("urllib.request.urlopen", side_effect=error):
+        result = check_webserver_health(28180)
+
+    assert result == "unhealthy"
+
+
 def test_get_running_containers_mprocs_detection() -> None:
     """Test that mprocs is detected as start-airflow (not just tmux)."""
     from unittest.mock import MagicMock, patch

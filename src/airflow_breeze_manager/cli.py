@@ -21,6 +21,9 @@ from airflow_breeze_manager.constants import (
     DEFAULT_WORKTREE_BASE,
     HEADLESS_POLL_INTERVAL,
     HEADLESS_READY_TIMEOUT,
+    HEALTH_HEALTHY,
+    HEALTH_NOT_APPLICABLE,
+    HEALTH_NOT_RUNNING,
     PROJECTS_DIR,
     SCHEMA_VERSION,
     SYMLINKED_FILES,
@@ -47,6 +50,7 @@ from airflow_breeze_manager.output import (
 )
 from airflow_breeze_manager.utils import (
     allocate_ports,
+    check_webserver_health,
     console,
     create_symlinks,
     find_alternative_port,
@@ -842,6 +846,13 @@ def list() -> None:
                 d["running"] = "airflow" if is_start_airflow else "shell"
             else:
                 d["running"] = None
+            # Enrich with health check
+            if d["running"] == "airflow":
+                d["health"] = check_webserver_health(project.ports.webserver)
+            elif d["running"] == "shell":
+                d["health"] = HEALTH_NOT_APPLICABLE
+            else:
+                d["health"] = HEALTH_NOT_RUNNING
             project_list.append(d)
 
         json_success({"projects": project_list, "current_project": current_project_name})
@@ -900,7 +911,11 @@ def list() -> None:
         if services:
             if is_start_airflow:
                 # Full Airflow environment (start-airflow with tmux)
-                running = "airflow"
+                health = check_webserver_health(project.ports.webserver)
+                if health == HEALTH_HEALTHY:
+                    running = "airflow"
+                else:
+                    running = "[red]airflow![/red]"
                 # Make API port clickable when running
                 api_url = f"http://localhost:{project.ports.webserver}"
                 api_display = f"[link={api_url}]:{project.ports.webserver}[/link]"
@@ -971,6 +986,13 @@ def status(
             data["running"] = "airflow" if is_start_airflow else "shell"
         else:
             data["running"] = None
+        # Enrich with health check
+        if data["running"] == "airflow":
+            data["health"] = check_webserver_health(project.ports.webserver)
+        elif data["running"] == "shell":
+            data["health"] = HEALTH_NOT_APPLICABLE
+        else:
+            data["health"] = HEALTH_NOT_RUNNING
         json_success(data)
 
     console.print(f"[bold cyan]{project.name}[/bold cyan]")
@@ -997,6 +1019,26 @@ def status(
     console.print(f"  API/Web: http://localhost:{project.ports.webserver}")
     console.print(f"  Flower: http://localhost:{project.ports.flower}")
     console.print(f"  SSH: ssh -p {project.ports.ssh} airflow@localhost")
+
+    # Running state & health
+    running_containers = get_running_containers()
+    container_info = running_containers.get(project.name, {})
+    services = container_info.get("services", [])
+    is_start_airflow = container_info.get("is_start_airflow", False)
+    if services:
+        running = "airflow" if is_start_airflow else "shell"
+    else:
+        running = None
+
+    console.print("\n[bold]Running:[/bold]")
+    if running == "airflow":
+        health = check_webserver_health(project.ports.webserver)
+        health_str = "[green]healthy[/green]" if health == HEALTH_HEALTHY else "[red]unhealthy[/red]"
+        console.print(f"  Status: airflow ({health_str})")
+    elif running == "shell":
+        console.print("  Status: shell")
+    else:
+        console.print("  Status: [dim]not running[/dim]")
 
 
 @app.command(rich_help_panel="Core Commands")
@@ -2170,7 +2212,20 @@ def start_airflow(
     use_headless = headless or is_json_mode() or not sys.stdin.isatty()
 
     if use_headless:
-        _start_airflow_headless(project, project_dir, worktree_path, env, compose_project)
+        # Build extra flags for breeze shell (subset of start-airflow flags that apply)
+        extra_breeze_args: builtins.list[str] = []
+        if mount_ui_dist:
+            extra_breeze_args.append("--mount-ui-dist")
+        if skip_assets_compilation:
+            extra_breeze_args.append("--skip-assets-compilation")
+
+        # Executor is passed as env var for 'airflow standalone'
+        if executor:
+            env["AIRFLOW__CORE__EXECUTOR"] = executor
+        if load_example_dags:
+            env["AIRFLOW__CORE__LOAD_EXAMPLES"] = "True"
+
+        _start_airflow_headless(project, project_dir, worktree_path, env, compose_project, extra_breeze_args)
         return
 
     breeze_cmd = [
@@ -2243,19 +2298,31 @@ def start_airflow(
 
 
 def _wait_for_ready(port: int, timeout: int = HEADLESS_READY_TIMEOUT) -> bool:
-    """Poll Airflow API until ready."""
+    """Poll Airflow API until ready.
+
+    Tries /api/v2/version first (Airflow 3), then /api/v1/version (Airflow 2).
+    Treats 200, 401, and 403 as "ready" (server is up, auth may be required).
+    """
     import time
+    import urllib.error
     import urllib.request
 
-    url = f"http://localhost:{port}/api/v2/version"
+    urls = [
+        f"http://localhost:{port}/api/v2/version",
+        f"http://localhost:{port}/api/v1/version",
+    ]
     start = time.time()
     while time.time() - start < timeout:
-        try:
-            with urllib.request.urlopen(url, timeout=5) as resp:
-                if resp.status == 200:
+        for url in urls:
+            try:
+                with urllib.request.urlopen(url, timeout=5) as resp:
+                    if resp.status in (200, 401, 403):
+                        return True
+            except urllib.error.HTTPError as e:
+                if e.code in (401, 403):
                     return True
-        except Exception:
-            pass
+            except Exception:
+                pass
         time.sleep(HEADLESS_POLL_INTERVAL)
     return False
 
@@ -2266,6 +2333,7 @@ def _start_airflow_headless(
     worktree_path: Path,
     env: dict[str, str],
     compose_project: str,
+    extra_breeze_args: builtins.list[str] | None = None,
 ) -> None:
     """Start Airflow in headless mode using 'breeze shell' + 'airflow standalone'.
 
@@ -2283,9 +2351,10 @@ def _start_airflow_headless(
         "--quiet",
         "--tty",
         "disabled",
-        "airflow",
-        "standalone",
     ]
+    if extra_breeze_args:
+        breeze_cmd.extend(extra_breeze_args)
+    breeze_cmd.extend(["airflow", "standalone"])
 
     log_file = project_dir / "headless.log"
 

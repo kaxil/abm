@@ -119,6 +119,28 @@ class TestListJson:
                 assert "urls" in p
                 assert "webserver" in p["urls"]
                 assert p["running"] is None
+                assert p["health"] == "not_running"
+
+    def test_list_json_health_airflow_running(self) -> None:
+        """list --json returns health field when airflow is running."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            projects_dir = Path(tmpdir) / ".abm" / "projects"
+            projects_dir.mkdir(parents=True)
+            _setup_project(projects_dir)
+
+            running = {"my-project": {"services": ["airflow"], "is_start_airflow": True}}
+
+            with (
+                _patch_projects_dir(projects_dir),
+                patch("airflow_breeze_manager.cli.get_running_containers", return_value=running),
+                patch("airflow_breeze_manager.cli.check_webserver_health", return_value="healthy"),
+            ):
+                result = runner.invoke(app, ["--json", "list"])
+                assert result.exit_code == 0
+                data = json.loads(result.output)
+                p = data["data"]["projects"][0]
+                assert p["running"] == "airflow"
+                assert p["health"] == "healthy"
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +167,26 @@ class TestStatusJson:
                 assert data["data"]["branch"] == "feature/test"
                 assert "urls" in data["data"]
                 assert data["data"]["running"] is None
+                assert data["data"]["health"] == "not_running"
+
+    def test_status_json_health_airflow_running(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            projects_dir = Path(tmpdir) / ".abm" / "projects"
+            projects_dir.mkdir(parents=True)
+            _setup_project(projects_dir)
+
+            running = {"my-project": {"services": ["airflow"], "is_start_airflow": True}}
+
+            with (
+                _patch_projects_dir(projects_dir),
+                patch("airflow_breeze_manager.cli.get_running_containers", return_value=running),
+                patch("airflow_breeze_manager.cli.check_webserver_health", return_value="unhealthy"),
+            ):
+                result = runner.invoke(app, ["--json", "status", "my-project"])
+                assert result.exit_code == 0
+                data = json.loads(result.output)
+                assert data["data"]["running"] == "airflow"
+                assert data["data"]["health"] == "unhealthy"
 
     def test_status_json_not_found(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
