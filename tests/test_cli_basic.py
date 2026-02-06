@@ -89,7 +89,9 @@ def test_cli_exec_no_project() -> None:
         with patch("airflow_breeze_manager.utils.PROJECTS_DIR", projects_dir):
             result = runner.invoke(app, ["exec", "nonexistent-project"])
             assert result.exit_code == 1
-            assert "not found" in result.output.lower()
+            # With smart project detection, unknown names are treated as exec args,
+            # so require_project(None) falls through to cwd detection failure
+            assert "not in a project directory" in result.output.lower() or "not found" in result.output.lower()
 
 
 def test_cli_exec_no_container() -> None:
