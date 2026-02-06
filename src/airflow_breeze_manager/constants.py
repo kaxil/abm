@@ -62,6 +62,10 @@ SYMLINKED_FILES = [
 # ABM automatically creates a symlink from each worktree to the main repo's .cursor
 # directory during `abm add`, so Cursor rules work immediately in all projects.
 
+# Headless mode settings
+HEADLESS_READY_TIMEOUT = 180  # seconds to wait for Airflow to become ready
+HEADLESS_POLL_INTERVAL = 3  # seconds between readiness polls
+
 # Breeze environment variable prefixes that should be isolated per project
 BREEZE_ENV_PREFIXES = [
     "WEB_HOST_PORT",

@@ -338,16 +338,19 @@ def get_running_containers() -> dict[str, dict[str, Any]]:
                     project_containers[project_name]["services"].append(service_name)
 
                     # Check if running start-airflow (has tmux/mprocs and multiple airflow processes)
+                    # Also detects headless mode (airflow processes without a terminal multiplexer)
                     try:
                         top_output = container.top()
                         processes = top_output.get("Processes", [])
-                        # Look for tmux or mprocs in process list
-                        # Breeze defaults to mprocs since Nov 2025, but tmux is still supported
                         for process in processes:
                             # Process is a list: [PID, USER, TIME, COMMAND]
                             if len(process) > 3:
                                 cmd_str = str(process[3]).lower()
                                 if "tmux" in cmd_str or "mprocs" in cmd_str:
+                                    project_containers[project_name]["is_start_airflow"] = True
+                                    break
+                                # Headless mode: airflow processes running directly
+                                if "airflow" in cmd_str and ("scheduler" in cmd_str or "api-server" in cmd_str):
                                     project_containers[project_name]["is_start_airflow"] = True
                                     break
                     except Exception:

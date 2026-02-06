@@ -19,12 +19,15 @@ from airflow_breeze_manager.constants import (
     ABM_DIR,
     DEFAULT_AIRFLOW_REPO,
     DEFAULT_WORKTREE_BASE,
+    HEADLESS_POLL_INTERVAL,
+    HEADLESS_READY_TIMEOUT,
     PROJECTS_DIR,
     SCHEMA_VERSION,
     SYMLINKED_FILES,
 )
 from airflow_breeze_manager.models import GlobalConfig, ProjectMetadata
 from airflow_breeze_manager.output import (
+    API_ERROR,
     BRANCH_NOT_FOUND,
     DOCKER_ERROR,
     INVALID_INPUT,
@@ -2088,6 +2091,15 @@ def start_airflow(
         builtins.list[str] | None,
         typer.Option("--debug-components", help="Components to enable remote debugging for"),
     ] = None,
+    headless: Annotated[
+        bool,
+        typer.Option(
+            "--headless",
+            help="Run Airflow without a terminal multiplexer (no TTY needed). "
+            "Uses 'breeze shell' + 'airflow standalone' to start all Airflow processes. "
+            "Automatically enabled when no TTY is available or in --json mode.",
+        ),
+    ] = False,
     extra_args: Annotated[
         builtins.list[str] | None,
         typer.Argument(help="Extra arguments passed to breeze start-airflow"),
@@ -2123,6 +2135,13 @@ def start_airflow(
     # Set compose project name for container isolation
     compose_project = get_docker_compose_project_name(project.name)
     env["COMPOSE_PROJECT_NAME"] = compose_project
+
+    # Headless mode: auto-detect when no TTY or in JSON mode
+    use_headless = headless or is_json_mode() or not sys.stdin.isatty()
+
+    if use_headless:
+        _start_airflow_headless(project, project_dir, worktree_path, env, compose_project)
+        return
 
     breeze_cmd = [
         "breeze",
@@ -2191,6 +2210,325 @@ def start_airflow(
         breeze_cmd,
         env,
     )
+
+
+def _wait_for_ready(port: int, timeout: int = HEADLESS_READY_TIMEOUT) -> bool:
+    """Poll Airflow API until ready."""
+    import time
+    import urllib.request
+
+    url = f"http://localhost:{port}/api/v2/version"
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                if resp.status == 200:
+                    return True
+        except Exception:
+            pass
+        time.sleep(HEADLESS_POLL_INTERVAL)
+    return False
+
+
+def _start_airflow_headless(
+    project: ProjectMetadata,
+    project_dir: Path,
+    worktree_path: Path,
+    env: dict[str, str],
+    compose_project: str,
+) -> None:
+    """Start Airflow in headless mode using 'breeze shell' + 'airflow standalone'.
+
+    Uses 'breeze shell' (which already forwards ports) to run 'airflow standalone',
+    which starts scheduler, dag-processor, api-server, and triggerer in a single
+    process. No mprocs/tmux needed, no TTY needed.
+    """
+    breeze_cmd = [
+        "breeze",
+        "shell",
+        "--python",
+        project.python_version,
+        "--backend",
+        project.backend,
+        "--quiet",
+        "--tty",
+        "disabled",
+        "airflow",
+        "standalone",
+    ]
+
+    log_file = project_dir / "headless.log"
+
+    # Run in background, capturing output to log file
+    with open(log_file, "w") as log_fh:
+        process = subprocess.Popen(
+            breeze_cmd,
+            cwd=worktree_path,
+            env=env,
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+        )
+
+    # Poll for readiness
+    ready = _wait_for_ready(project.ports.webserver)
+
+    result = {
+        "project": project.to_rich_dict(),
+        "pid": process.pid,
+        "ready": ready,
+        "urls": {
+            "webserver": f"http://localhost:{project.ports.webserver}",
+        },
+        "log_file": str(log_file),
+        "compose_project_name": compose_project,
+    }
+
+    if is_json_mode():
+        json_success(result)
+
+    if ready:
+        console.print(f"[green]Airflow is ready for '{project.name}'![/green]")
+        console.print(f"  API: http://localhost:{project.ports.webserver}")
+        console.print(f"  PID: {process.pid}")
+        console.print(f"  Logs: {log_file}")
+    else:
+        console.print("[yellow]Airflow did not become ready within timeout[/yellow]")
+        console.print(f"  Check logs: {log_file}")
+
+
+@app.command("stop-airflow", rich_help_panel="Environment Commands")
+def stop_airflow(
+    project_name: Annotated[
+        str | None,
+        typer.Argument(help="Project name (auto-detected if in project directory)"),
+    ] = None,
+) -> None:
+    """Stop a running Airflow instance for a project."""
+    project, _project_dir = require_project(project_name)
+    stop_project_containers(project.worktree_path)
+    if is_json_mode():
+        json_success({"project": project.name, "stopped": True})
+    console.print(f"[green]Stopped Airflow for '{project.name}'[/green]")
+
+
+@app.command(rich_help_panel="Environment Commands")
+def api(
+    endpoint: Annotated[
+        str | None,
+        typer.Argument(help="API endpoint (e.g. 'dags', 'dags/my_dag') or 'ls' to list endpoints"),
+    ] = None,
+    project_name: Annotated[
+        str | None,
+        typer.Option("--project", "-p", help="Project name (auto-detected if in project directory)"),
+    ] = None,
+    method: Annotated[
+        str,
+        typer.Option("--method", "-X", help="HTTP method"),
+    ] = "GET",
+    field: Annotated[
+        builtins.list[str] | None,
+        typer.Option("--field", "-F", help="Typed field (key=value, auto-coerces types)"),
+    ] = None,
+    raw_field: Annotated[
+        builtins.list[str] | None,
+        typer.Option("--raw-field", "-f", help="Raw string field (key=value, always string)"),
+    ] = None,
+    header: Annotated[
+        builtins.list[str] | None,
+        typer.Option("--header", "-H", help="Additional header (key:value)"),
+    ] = None,
+    body: Annotated[
+        str | None,
+        typer.Option("--body", help="Raw JSON body"),
+    ] = None,
+    include: Annotated[
+        bool,
+        typer.Option("--include", "-i", help="Include HTTP status and headers in output"),
+    ] = False,
+    raw: Annotated[
+        bool,
+        typer.Option("--raw", help="Use endpoint as-is without /api/vX prefix"),
+    ] = False,
+    username: Annotated[
+        str,
+        typer.Option("--username", "-U", help="Airflow username"),
+    ] = "airflow",
+    password: Annotated[
+        str,
+        typer.Option("--password", "-P", help="Airflow password"),
+    ] = "airflow",
+    filter_pattern: Annotated[
+        str | None,
+        typer.Option("--filter", help="Filter pattern for 'ls' subcommand"),
+    ] = None,
+) -> None:
+    """Make direct requests to an ABM project's Airflow REST API.
+
+    Similar to `gh api` for GitHub. The API version prefix (/api/v1 or /api/v2) is
+    auto-detected based on the running Airflow version.
+
+    \b
+    Examples:
+      abm api dags                              # GET /api/v1/dags
+      abm api dags/my_dag                       # GET /api/v1/dags/my_dag
+      abm api health --raw                      # GET /health (no version prefix)
+      abm api dags -F limit=10                  # GET with query params
+      abm api dags/my_dag -X PATCH -F is_paused=true
+      abm api variables -X POST -f key=test -f value=hello
+      abm api dags -i                           # Include HTTP headers
+      abm api ls                                # List available endpoints
+      abm api ls --filter variable              # Filter endpoints by pattern
+    """
+    import json as json_mod
+
+    from airflow_breeze_manager.api import (
+        detect_api_version,
+        format_endpoint_list,
+        get_openapi_spec,
+        make_request,
+        parse_fields,
+    )
+
+    if endpoint is None:
+        if is_json_mode():
+            json_error("Endpoint is required. Use 'abm api <endpoint>' or 'abm api ls'.", INVALID_INPUT)
+        console.print("[red]Endpoint is required. Use 'abm api <endpoint>' or 'abm api ls'.[/red]")
+        raise typer.Exit(1)
+
+    project, _project_dir = require_project(project_name)
+
+    base_url = f"http://localhost:{project.ports.webserver}"
+
+    # Detect API version (unless --raw, which skips the prefix entirely)
+    api_version = "v1"
+    if not raw:
+        api_version = detect_api_version(base_url, username=username, password=password)
+
+    # Handle 'ls' subcommand — list available endpoints from OpenAPI spec
+    if endpoint == "ls":
+        spec = get_openapi_spec(base_url, api_version, username=username, password=password)
+        if spec is None:
+            if is_json_mode():
+                json_error("Could not fetch OpenAPI spec. Is Airflow running?", API_ERROR)
+            console.print("[red]Could not fetch OpenAPI spec. Is Airflow running?[/red]")
+            raise typer.Exit(1)
+
+        endpoints = format_endpoint_list(spec, filter_pattern=filter_pattern)
+
+        if is_json_mode():
+            json_success({"endpoints": endpoints, "api_version": api_version})
+
+        if not endpoints:
+            console.print("[yellow]No endpoints found matching filter.[/yellow]")
+            raise typer.Exit(0)
+
+        table = Table(title=f"Airflow API Endpoints ({api_version})")
+        table.add_column("Method", style="bold cyan", width=8)
+        table.add_column("Path", style="green")
+        table.add_column("Summary", style="dim")
+        for ep in endpoints:
+            table.add_row(ep["method"], ep["path"], ep["summary"])
+        console.print(table)
+        raise typer.Exit(0)
+
+    # Parse fields
+    try:
+        parsed_fields = parse_fields(field, raw_field)
+    except ValueError as e:
+        if is_json_mode():
+            json_error(str(e), INVALID_INPUT)
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+    # Parse additional headers
+    extra_headers: dict[str, str] = {}
+    if header:
+        for h in header:
+            if ":" not in h:
+                msg = f"Invalid header format (expected key:value): {h}"
+                if is_json_mode():
+                    json_error(msg, INVALID_INPUT)
+                console.print(f"[red]{msg}[/red]")
+                raise typer.Exit(1)
+            key, value = h.split(":", 1)
+            extra_headers[key.strip()] = value.strip()
+
+    # Determine params vs json_data based on method
+    params = None
+    json_data = None
+
+    if body:
+        # Explicit --body takes precedence
+        try:
+            json_data = json_mod.loads(body)
+        except json_mod.JSONDecodeError as e:
+            msg = f"Invalid JSON body: {e}"
+            if is_json_mode():
+                json_error(msg, INVALID_INPUT)
+            console.print(f"[red]{msg}[/red]")
+            raise typer.Exit(1)
+        # Fields merge into body if present
+        if parsed_fields:
+            if isinstance(json_data, dict):
+                json_data.update(parsed_fields)
+    elif parsed_fields:
+        if method.upper() in ("GET", "DELETE", "HEAD", "OPTIONS"):
+            params = parsed_fields
+        else:
+            json_data = parsed_fields
+
+    # Make the request
+    result = make_request(
+        base_url=base_url,
+        endpoint=endpoint,
+        method=method.upper(),
+        params=params,
+        json_data=json_data,
+        headers=extra_headers if extra_headers else None,
+        username=username,
+        password=password,
+        raw_endpoint=raw,
+        api_version=api_version,
+    )
+
+    # Handle connection errors (status_code 0)
+    if result["status_code"] == 0:
+        error_body = result["body"]
+        error_msg = error_body.get("error", str(error_body)) if isinstance(error_body, dict) else str(error_body)
+        msg = f"Connection failed: {error_msg}"
+        if is_json_mode():
+            json_error(msg, API_ERROR)
+        console.print(f"[red]{msg}[/red]")
+        raise typer.Exit(1)
+
+    # JSON mode: structured output
+    if is_json_mode():
+        json_success(
+            {
+                "status_code": result["status_code"],
+                "headers": result["headers"],
+                "body": result["body"],
+                "api_version": api_version,
+            }
+        )
+
+    # Rich mode: format output
+    if include:
+        console.print(f"[bold]HTTP {result['status_code']}[/bold]")
+        for key, value in result["headers"].items():
+            console.print(f"[dim]{key}: {value}[/dim]")
+        console.print()
+
+    # Pretty-print body
+    response_body = result["body"]
+    if isinstance(response_body, (dict, builtins.list)):
+        console.print_json(json_mod.dumps(response_body, indent=2))
+    else:
+        console.print(str(response_body))
+
+    # Exit with non-zero for HTTP errors
+    if result["status_code"] >= 400:
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":
