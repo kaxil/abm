@@ -1245,15 +1245,20 @@ def shell(
     os.execvpe("breeze", breeze_cmd, env)
 
 
-@app.command(name="exec", rich_help_panel="Environment Commands")
+@app.command(
+    name="exec",
+    rich_help_panel="Environment Commands",
+    context_settings={
+        "allow_extra_args": True,
+        "allow_interspersed_args": False,
+        "ignore_unknown_options": True,
+    },
+)
 def exec_command(
+    ctx: typer.Context,
     project_name: Annotated[
         str | None,
         typer.Argument(help="Project name (auto-detected if in project directory)"),
-    ] = None,
-    exec_args: Annotated[
-        builtins.list[str] | None,
-        typer.Argument(help="Additional arguments to pass to the shell"),
     ] = None,
 ) -> None:
     """Join the interactive shell of a running Airflow container.
@@ -1264,9 +1269,22 @@ def exec_command(
     Examples:
         abm exec
         abm exec my-project bash
-        abm exec my-project python -c "print('hello')"
+        abm exec python -c "print('hello')"    # auto-detect project
     """
-    project, _ = require_project(project_name)
+    # Build exec args from extra args captured by Click context
+    exec_args: builtins.list[str] | None = builtins.list(ctx.args) or None
+
+    # If project_name was provided, check if it's actually a known project or part of the command
+    resolved_project_name: str | None = None
+    if project_name is not None:
+        if get_project(project_name):
+            resolved_project_name = project_name
+        else:
+            # Not a known project - treat it as the first word of the exec args
+            exec_args = [project_name, *(exec_args or [])]
+            resolved_project_name = None
+
+    project, _ = require_project(resolved_project_name)
 
     if project.frozen:
         if is_json_mode():
@@ -1332,27 +1350,44 @@ def exec_command(
     sys.exit(exec_result.returncode)
 
 
-@app.command(rich_help_panel="Environment Commands")
+@app.command(
+    rich_help_panel="Environment Commands",
+    context_settings={
+        "allow_extra_args": True,
+        "allow_interspersed_args": False,
+        "ignore_unknown_options": True,
+    },
+)
 def run(
+    ctx: typer.Context,
     project_name: Annotated[
         str | None,
         typer.Argument(help="Project name (auto-detected if in project directory)"),
-    ] = None,
-    command: Annotated[
-        builtins.list[str] | None,
-        typer.Argument(help="Command to run (e.g., pytest tests/, python -m mypy)"),
     ] = None,
 ) -> None:
     """Run an ad-hoc command in the breeze environment (equivalent to 'breeze run').
 
     Examples:
         abm run my-project pytest tests/
-        abm run my-project python -m mypy providers/amazon/
-        abm run my-project python -c "import airflow; print(airflow.__version__)"
+        abm run pytest tests/                                          # auto-detect project
+        abm run python -c "import airflow; print(airflow.__version__)"  # flags pass through
 
     This uses 'breeze run' under the hood to execute commands without entering an interactive shell.
     """
-    project, _ = require_project(project_name)
+    # Build the command from extra args captured by Click context
+    command: builtins.list[str] = builtins.list(ctx.args)
+
+    # If project_name was provided, check if it's actually a known project or part of the command
+    resolved_project_name: str | None = None
+    if project_name is not None:
+        if get_project(project_name):
+            resolved_project_name = project_name
+        else:
+            # Not a known project - treat it as the first word of the command
+            command = [project_name, *command]
+            resolved_project_name = None
+
+    project, _ = require_project(resolved_project_name)
 
     if project.frozen:
         if is_json_mode():
