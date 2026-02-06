@@ -27,6 +27,7 @@ DOCKER_ERROR = "DOCKER_ERROR"
 INVALID_WORKTREE = "INVALID_WORKTREE"
 INVALID_INPUT = "INVALID_INPUT"
 COMMAND_FAILED = "COMMAND_FAILED"
+API_ERROR = "API_ERROR"
 
 # ---------------------------------------------------------------------------
 # Module-level state — set by the Typer app callback in cli.py
