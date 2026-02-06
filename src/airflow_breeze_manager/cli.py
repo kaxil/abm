@@ -144,9 +144,7 @@ def require_project(name: str | None = None) -> tuple[ProjectMetadata, Path]:
     return project_or_none, project_dir
 
 
-def _resolve_port_conflicts(
-    project: ProjectMetadata, project_dir: Path, conflicts: dict[str, int]
-) -> None:
+def _resolve_port_conflicts(project: ProjectMetadata, project_dir: Path, conflicts: dict[str, int]) -> None:
     """Try to auto-resolve port conflicts or exit.
 
     In --json/--yes mode, automatically finds alternative ports.
@@ -181,9 +179,7 @@ def _resolve_port_conflicts(
         raise typer.Exit(1)
 
 
-def _auto_resolve_ports(
-    project: ProjectMetadata, project_dir: Path, conflicts: dict[str, int]
-) -> None:
+def _auto_resolve_ports(project: ProjectMetadata, project_dir: Path, conflicts: dict[str, int]) -> None:
     """Find alternative ports for conflicting services."""
     from airflow_breeze_manager.constants import PORT_RANGES
 
@@ -1205,20 +1201,22 @@ def shell(
 
     if is_json_mode():
         # Don't launch shell — return the env vars and command for the agent
-        json_success({
-            "project": project.to_rich_dict(),
-            "worktree_path": str(worktree_path),
-            "env": port_env,
-            "compose_project_name": compose_project,
-            "breeze_command": [
-                "breeze",
-                "shell",
-                "--python",
-                project.python_version,
-                "--backend",
-                project.backend,
-            ],
-        })
+        json_success(
+            {
+                "project": project.to_rich_dict(),
+                "worktree_path": str(worktree_path),
+                "env": port_env,
+                "compose_project_name": compose_project,
+                "breeze_command": [
+                    "breeze",
+                    "shell",
+                    "--python",
+                    project.python_version,
+                    "--backend",
+                    project.backend,
+                ],
+            }
+        )
 
     console.print(f"[green]Entering breeze shell for '{project.name}'...[/green]")
     console.print("[cyan]Configuration:[/cyan]")
@@ -1314,14 +1312,16 @@ def exec_command(
         if exec_args:
             cmd_to_run_no_tty.extend(exec_args)
         process = subprocess.run(cmd_to_run_no_tty, capture_output=True, text=True, check=False)
-        json_success({
-            "project": project.name,
-            "container_id": container_id,
-            "exit_code": process.returncode,
-            "stdout": process.stdout,
-            "stderr": process.stderr,
-            "command": cmd_to_run_no_tty,
-        })
+        json_success(
+            {
+                "project": project.name,
+                "container_id": container_id,
+                "exit_code": process.returncode,
+                "stdout": process.stdout,
+                "stderr": process.stderr,
+                "command": cmd_to_run_no_tty,
+            }
+        )
 
     console.print(f"[green]Joining Airflow container for '{project.name}'...[/green]")
 
@@ -1390,13 +1390,15 @@ def run(
             cwd=worktree_path,
             env=env,
         )
-        json_success({
-            "project": project.name,
-            "exit_code": process.returncode,
-            "stdout": process.stdout,
-            "stderr": process.stderr,
-            "command": breeze_cmd,
-        })
+        json_success(
+            {
+                "project": project.name,
+                "exit_code": process.returncode,
+                "stdout": process.stdout,
+                "stderr": process.stderr,
+                "command": breeze_cmd,
+            }
+        )
 
     # Run breeze run with project-specific python and backend
     os.chdir(worktree_path)
@@ -2031,16 +2033,18 @@ def start_airflow(
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        json_success({
-            "project": project.to_rich_dict(),
-            "pid": process.pid,
-            "urls": {
-                "webserver": f"http://localhost:{project.ports.webserver}",
-                "flower": f"http://localhost:{project.ports.flower}",
-            },
-            "compose_project_name": compose_project,
-            "breeze_command": breeze_cmd,
-        })
+        json_success(
+            {
+                "project": project.to_rich_dict(),
+                "pid": process.pid,
+                "urls": {
+                    "webserver": f"http://localhost:{project.ports.webserver}",
+                    "flower": f"http://localhost:{project.ports.flower}",
+                },
+                "compose_project_name": compose_project,
+                "breeze_command": breeze_cmd,
+            }
+        )
 
     console.print(f"[green]Starting Airflow for '{project.name}'...[/green]")
     console.print("[cyan]Services:[/cyan]")
