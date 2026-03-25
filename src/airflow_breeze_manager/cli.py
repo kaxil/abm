@@ -2155,6 +2155,11 @@ def start_airflow(
 
     worktree_path = Path(project.worktree_path)
 
+    # If --mount-ui-dist, ensure the worktree has a built UI dist directory
+    if mount_ui_dist:
+        config = get_config()
+        _ensure_ui_dist(worktree_path, Path(config.airflow_repo))
+
     # Set environment variables for port isolation
     env = os.environ.copy()
 
@@ -2252,6 +2257,50 @@ def start_airflow(
         "breeze",
         breeze_cmd,
         env,
+    )
+
+
+def _ensure_ui_dist(worktree_path: Path, main_repo_path: Path) -> None:
+    """Copy UI dist from main Airflow repo if the worktree's dist is empty.
+
+    New worktrees don't have the built UI assets, which causes "Internal Server
+    Error" when --mount-ui-dist is used. This copies the pre-built dist from
+    the main repo so the UI works immediately.
+    """
+    ui_dist_rel = Path("airflow-core") / "src" / "airflow" / "ui" / "dist"
+    worktree_dist = worktree_path / ui_dist_rel
+    main_dist = main_repo_path / ui_dist_rel
+
+    if (worktree_dist / "index.html").exists():
+        return  # Already populated
+
+    if not (main_dist / "index.html").exists():
+        console.print(
+            "[yellow]Warning: UI dist not found in main repo either — "
+            "the UI may not work. Run 'pnpm build' in the main repo's ui/ directory.[/yellow]"
+        )
+        return
+
+    console.print("[cyan]Copying UI dist from main repo...[/cyan]")
+    worktree_dist.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(str(main_dist), str(worktree_dist), dirs_exist_ok=True)
+    console.print("[green]UI dist copied successfully.[/green]")
+
+
+def _fetch_jwt_token(port: int) -> str | None:
+    """Fetch a JWT access token from a running Airflow instance.
+
+    Returns the access_token string, or None if the endpoint is unavailable
+    (e.g. Airflow 2 which has no /auth/token).
+    """
+    from airflow_breeze_manager.api import _get_bearer_token
+
+    return _get_bearer_token(
+        f"http://localhost:{port}",
+        username="admin",
+        password="admin",
+        timeout=10.0,
+        _force_refresh=True,
     )
 
 
@@ -2353,6 +2402,11 @@ def _start_airflow_headless(
     # Poll for readiness
     ready = _wait_for_ready(project.ports.webserver, log_file=log_file)
 
+    # Fetch JWT token when Airflow is ready
+    token: str | None = None
+    if ready:
+        token = _fetch_jwt_token(project.ports.webserver)
+
     result = {
         "project": project.to_rich_dict(),
         "pid": process.pid,
@@ -2363,6 +2417,8 @@ def _start_airflow_headless(
         "log_file": str(log_file),
         "compose_project_name": compose_project,
     }
+    if token:
+        result["token"] = token
 
     if is_json_mode():
         json_success(result)
@@ -2372,6 +2428,8 @@ def _start_airflow_headless(
         console.print(f"  API: http://localhost:{project.ports.webserver}")
         console.print(f"  PID: {process.pid}")
         console.print(f"  Logs: {log_file}")
+        if token:
+            console.print(f"  Token: {token}")
     else:
         console.print("[yellow]Airflow did not become ready within timeout[/yellow]")
         console.print(f"  Check logs: {log_file}")
