@@ -2297,7 +2297,7 @@ def start_airflow(
     )
 
 
-def _wait_for_ready(port: int, timeout: int = HEADLESS_READY_TIMEOUT) -> bool:
+def _wait_for_ready(port: int, timeout: int = HEADLESS_READY_TIMEOUT, log_file: Path | None = None) -> bool:
     """Poll Airflow API until ready.
 
     Tries /api/v2/version first (Airflow 3), then /api/v1/version (Airflow 2).
@@ -2312,17 +2312,36 @@ def _wait_for_ready(port: int, timeout: int = HEADLESS_READY_TIMEOUT) -> bool:
         f"http://localhost:{port}/api/v1/version",
     ]
     start = time.time()
+    status = "waiting"
+    last_status = ""
     while time.time() - start < timeout:
+        elapsed = int(time.time() - start)
         for url in urls:
             try:
                 with urllib.request.urlopen(url, timeout=5) as resp:
                     if resp.status in (200, 401, 403):
+                        if not is_json_mode():
+                            console.print(f"\r[green]  API ready after {elapsed}s[/green]")
                         return True
             except urllib.error.HTTPError as e:
                 if e.code in (401, 403):
+                    if not is_json_mode():
+                        console.print(f"\r[green]  API ready after {elapsed}s[/green]")
                     return True
+            except urllib.error.URLError:
+                status = "waiting for API server"
+            except ConnectionRefusedError:
+                status = "waiting for container"
             except Exception:
-                pass
+                status = "waiting"
+        if not is_json_mode() and status != last_status:
+            console.print(f"  [{elapsed}s] {status}...", style="dim")
+            last_status = status
+        elif not is_json_mode() and elapsed > 0 and elapsed % 30 == 0:
+            msg = f"  [{elapsed}s] still {status}..."
+            if log_file:
+                msg += f" (logs: {log_file})"
+            console.print(msg, style="dim")
         time.sleep(HEADLESS_POLL_INTERVAL)
     return False
 
@@ -2354,9 +2373,14 @@ def _start_airflow_headless(
     ]
     if extra_breeze_args:
         breeze_cmd.extend(extra_breeze_args)
-    breeze_cmd.extend(["airflow", "standalone"])
+    breeze_cmd.append("airflow standalone")
 
     log_file = project_dir / "headless.log"
+
+    if not is_json_mode():
+        console.print(f"[cyan]Starting Airflow headlessly for '{project.name}'...[/cyan]")
+        console.print(f"  Port: {project.ports.webserver}")
+        console.print(f"  Logs: {log_file}")
 
     # Run in background, capturing output to log file
     with open(log_file, "w") as log_fh:
@@ -2369,7 +2393,7 @@ def _start_airflow_headless(
         )
 
     # Poll for readiness
-    ready = _wait_for_ready(project.ports.webserver)
+    ready = _wait_for_ready(project.ports.webserver, log_file=log_file)
 
     result = {
         "project": project.to_rich_dict(),
