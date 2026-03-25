@@ -9,6 +9,7 @@ from unittest.mock import patch
 from airflow_breeze_manager.models import ProjectMetadata, ProjectPorts
 from airflow_breeze_manager.utils import (
     allocate_ports,
+    build_breeze_command,
     create_symlinks,
     find_alternative_port,
     get_all_projects,
@@ -18,6 +19,39 @@ from airflow_breeze_manager.utils import (
     is_port_in_use,
     remove_symlinks,
 )
+
+
+def test_build_breeze_command_uses_uv_when_pyproject_exists(tmp_path: Path) -> None:
+    """When dev/breeze/pyproject.toml exists, returns uv run command."""
+    breeze_project = tmp_path / "dev" / "breeze"
+    breeze_project.mkdir(parents=True)
+    (breeze_project / "pyproject.toml").write_text("[project]\nname = 'apache-airflow-breeze'\n")
+
+    breeze_cmd = ["breeze", "shell", "--python", "3.12"]
+    actual_cmd = build_breeze_command(breeze_cmd, tmp_path)
+
+    assert actual_cmd == ["uv", "run", "--project", str(breeze_project), "breeze", "shell", "--python", "3.12"]
+
+
+def test_build_breeze_command_falls_back_without_pyproject(tmp_path: Path) -> None:
+    """Without dev/breeze/pyproject.toml, returns the original command."""
+    breeze_cmd = ["breeze", "shell", "--python", "3.12"]
+    actual_cmd = build_breeze_command(breeze_cmd, tmp_path)
+
+    assert actual_cmd is breeze_cmd
+
+
+def test_build_breeze_command_respects_global_breeze_env_var(tmp_path: Path) -> None:
+    """ABM_USE_GLOBAL_BREEZE forces global breeze even when pyproject exists."""
+    breeze_project = tmp_path / "dev" / "breeze"
+    breeze_project.mkdir(parents=True)
+    (breeze_project / "pyproject.toml").write_text("[project]\nname = 'apache-airflow-breeze'\n")
+
+    breeze_cmd = ["breeze", "shell", "--python", "3.12"]
+    with patch.dict("os.environ", {"ABM_USE_GLOBAL_BREEZE": "1"}):
+        actual_cmd = build_breeze_command(breeze_cmd, tmp_path)
+
+    assert actual_cmd is breeze_cmd
 
 
 def test_get_docker_compose_project_name() -> None:

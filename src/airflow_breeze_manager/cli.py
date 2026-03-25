@@ -50,6 +50,7 @@ from airflow_breeze_manager.output import (
 )
 from airflow_breeze_manager.utils import (
     allocate_ports,
+    build_breeze_command,
     check_webserver_health,
     console,
     create_symlinks,
@@ -1233,6 +1234,8 @@ def shell(
     if extra_args:
         breeze_cmd.extend(extra_args)
 
+    actual_cmd = build_breeze_command(breeze_cmd, worktree_path)
+
     if is_json_mode():
         # Don't launch shell — return the env vars and command for the agent
         json_success(
@@ -1255,7 +1258,7 @@ def shell(
 
     # Run breeze shell with project-specific python and backend
     os.chdir(worktree_path)
-    os.execvpe("breeze", breeze_cmd, env)
+    os.execvpe(actual_cmd[0], actual_cmd, env)
 
 
 @app.command(
@@ -1443,10 +1446,12 @@ def run(
         breeze_cmd.append("--forward-ports")
     breeze_cmd.extend(command)
 
+    actual_cmd = build_breeze_command(breeze_cmd, worktree_path)
+
     if is_json_mode():
         # Use subprocess.run with capture_output instead of os.execvpe
         process = subprocess.run(
-            breeze_cmd,
+            actual_cmd,
             capture_output=True,
             text=True,
             check=False,
@@ -1466,8 +1471,8 @@ def run(
     # Run breeze run with project-specific python and backend
     os.chdir(worktree_path)
     os.execvpe(
-        "breeze",
-        breeze_cmd,
+        actual_cmd[0],
+        actual_cmd,
         env,
     )
 
@@ -2219,10 +2224,12 @@ def start_airflow(
     if extra_args:
         breeze_cmd.extend(extra_args)
 
+    actual_cmd = build_breeze_command(breeze_cmd, worktree_path)
+
     if is_json_mode():
         # Launch detached via subprocess.Popen, return PID + URLs
         process = subprocess.Popen(
-            breeze_cmd,
+            actual_cmd,
             cwd=worktree_path,
             env=env,
             stdout=subprocess.DEVNULL,
@@ -2254,8 +2261,8 @@ def start_airflow(
     # Run breeze start-airflow with project-specific python and backend
     os.chdir(worktree_path)
     os.execvpe(
-        "breeze",
-        breeze_cmd,
+        actual_cmd[0],
+        actual_cmd,
         env,
     )
 
@@ -2382,6 +2389,8 @@ def _start_airflow_headless(
         breeze_cmd.extend(extra_breeze_args)
     breeze_cmd.append("airflow standalone")
 
+    actual_cmd = build_breeze_command(breeze_cmd, worktree_path)
+
     log_file = project_dir / "headless.log"
 
     if not is_json_mode():
@@ -2392,7 +2401,7 @@ def _start_airflow_headless(
     # Run in background, capturing output to log file
     with open(log_file, "w") as log_fh:
         process = subprocess.Popen(
-            breeze_cmd,
+            actual_cmd,
             cwd=worktree_path,
             env=env,
             stdout=log_fh,

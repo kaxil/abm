@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -269,6 +270,28 @@ def remove_repo_dir_symlinks(worktree_path: Path, quiet: bool = False) -> None:
             target.unlink()
             if not quiet:
                 console.print(f"[dim]-> Removed {dir_name} symlink[/dim]")
+
+
+def build_breeze_command(
+    breeze_cmd: list[str],
+    worktree_path: Path,
+) -> list[str]:
+    """Build the actual command to invoke breeze, using uv run when possible.
+
+    If dev/breeze/pyproject.toml exists in the worktree, wraps the command
+    with ``uv run --project`` so breeze runs from the worktree's own package.
+    Otherwise returns the original command for global execution.
+
+    Set ABM_USE_GLOBAL_BREEZE=1 to force using the globally installed breeze.
+    """
+    if os.environ.get("ABM_USE_GLOBAL_BREEZE", "").lower() in ("1", "true", "yes"):
+        return breeze_cmd
+
+    breeze_project = worktree_path / "dev" / "breeze"
+    if (breeze_project / "pyproject.toml").exists():
+        return ["uv", "run", "--project", str(breeze_project), *breeze_cmd]
+
+    return breeze_cmd
 
 
 def get_docker_compose_project_name(project_name: str) -> str:

@@ -156,7 +156,12 @@ def _run_headless(sample_project, tmp_path, **kwargs):
     mock_process = MagicMock()
     mock_process.pid = 12345
 
-    with patch("subprocess.Popen", autospec=True) as mock_popen:
+    # Patch build_breeze_command to pass through unchanged so tests can assert
+    # on the logical breeze command without worrying about uv wrapping
+    with (
+        patch("subprocess.Popen", autospec=True) as mock_popen,
+        patch("airflow_breeze_manager.cli.build_breeze_command", side_effect=lambda cmd, _path: cmd),
+    ):
         mock_popen.return_value = mock_process
         try:
             _start_airflow_headless(
