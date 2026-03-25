@@ -6,7 +6,7 @@ from typing import Any
 
 from rich.console import Console
 
-from airflow_breeze_manager.constants import PORT_RANGES, PROJECTS_DIR
+from airflow_breeze_manager.constants import PORT_RANGES, PROJECTS_DIR, REPO_SYMLINKED_DIRS
 from airflow_breeze_manager.models import ProjectMetadata, ProjectPorts
 
 console = Console()
@@ -229,6 +229,46 @@ def remove_symlinks(worktree_path: Path, files: list[str]) -> None:
         target = worktree_path / file
         if target.is_symlink():
             target.unlink()
+
+
+def symlink_repo_dirs(repo_path: Path, worktree_path: Path, quiet: bool = False) -> None:
+    """Symlink directories from the main repo into a worktree.
+
+    For each directory in REPO_SYMLINKED_DIRS (.claude, .cursor, etc.), creates
+    a symlink in the worktree pointing to the original in the main repo. Skips
+    directories that don't exist in the source or already exist as real directories
+    in the worktree.
+    """
+    for dir_name in REPO_SYMLINKED_DIRS:
+        source = repo_path / dir_name
+        target = worktree_path / dir_name
+
+        if not source.exists():
+            if not quiet:
+                console.print(f"[dim]Note: {dir_name} not found in main Airflow repo (it's gitignored)[/dim]")
+            continue
+
+        if target.exists() and not target.is_symlink():
+            if not quiet:
+                console.print(f"[yellow]Warning: {dir_name} exists as a directory, not creating symlink[/yellow]")
+            continue
+
+        if target.is_symlink():
+            target.unlink()
+
+        target.symlink_to(source)
+        if not quiet:
+            console.print(f"[dim]-> Created {dir_name} symlink to {source}[/dim]")
+
+
+def remove_repo_dir_symlinks(worktree_path: Path, quiet: bool = False) -> None:
+    """Remove repo directory symlinks from a worktree."""
+    for dir_name in REPO_SYMLINKED_DIRS:
+        target = worktree_path / dir_name
+        if target.is_symlink():
+            target.unlink()
+            if not quiet:
+                console.print(f"[dim]-> Removed {dir_name} symlink[/dim]")
 
 
 def get_docker_compose_project_name(project_name: str) -> str:

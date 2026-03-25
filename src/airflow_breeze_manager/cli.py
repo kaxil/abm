@@ -61,10 +61,12 @@ from airflow_breeze_manager.utils import (
     get_running_containers,
     git_branch_exists,
     git_worktree_exists,
+    remove_repo_dir_symlinks,
     remove_symlinks,
     resolve_project_from_path,
     run_command,
     stop_project_containers,
+    symlink_repo_dirs,
     validate_airflow_worktree,
 )
 
@@ -556,27 +558,8 @@ fi
     # Create symlinks for ABM-managed files
     create_symlinks(project_dir, worktree_path, SYMLINKED_FILES)
 
-    # Create .cursor symlink to main Airflow repo (if it exists)
-    # This allows Cursor to work immediately without manual setup
-    airflow_cursor_dir = Path(config.airflow_repo) / ".cursor"
-    worktree_cursor_link = worktree_path / ".cursor"
-
-    if airflow_cursor_dir.exists():
-        # Remove existing .cursor if it's a regular directory (shouldn't happen, but be safe)
-        if worktree_cursor_link.exists() and not worktree_cursor_link.is_symlink():
-            if not is_json_mode():
-                console.print("[yellow]Warning: .cursor exists as a directory, not creating symlink[/yellow]")
-        elif worktree_cursor_link.is_symlink():
-            # Already a symlink, update it
-            worktree_cursor_link.unlink()
-            worktree_cursor_link.symlink_to(airflow_cursor_dir)
-        else:
-            # Create new symlink
-            worktree_cursor_link.symlink_to(airflow_cursor_dir)
-            if not is_json_mode():
-                console.print(f"[dim]-> Created .cursor symlink to {airflow_cursor_dir}[/dim]")
-    elif not is_json_mode():
-        console.print("[dim]Note: .cursor not found in main Airflow repo (it's gitignored)[/dim]")
+    # Create symlinks for editor/AI config directories from main repo
+    symlink_repo_dirs(Path(config.airflow_repo), worktree_path, quiet=is_json_mode())
 
     if is_json_mode():
         json_success(project.to_rich_dict())
@@ -792,21 +775,8 @@ fi
     # Create symlinks for ABM-managed files
     create_symlinks(project_dir, worktree, SYMLINKED_FILES)
 
-    # Create .cursor symlink to main Airflow repo (if it exists)
-    airflow_cursor_dir = Path(config.airflow_repo) / ".cursor"
-    worktree_cursor_link = worktree / ".cursor"
-
-    if airflow_cursor_dir.exists():
-        if worktree_cursor_link.exists() and not worktree_cursor_link.is_symlink():
-            if not is_json_mode():
-                console.print("[yellow]Warning: .cursor exists as a directory, not creating symlink[/yellow]")
-        elif worktree_cursor_link.is_symlink():
-            worktree_cursor_link.unlink()
-            worktree_cursor_link.symlink_to(airflow_cursor_dir)
-        else:
-            worktree_cursor_link.symlink_to(airflow_cursor_dir)
-            if not is_json_mode():
-                console.print(f"[dim]-> Created .cursor symlink to {airflow_cursor_dir}[/dim]")
+    # Create symlinks for editor/AI config directories from main repo
+    symlink_repo_dirs(Path(config.airflow_repo), worktree, quiet=is_json_mode())
 
     if is_json_mode():
         json_success(project.to_rich_dict())
@@ -1094,16 +1064,10 @@ def remove(
         console.print("Stopping Docker containers...")
     stop_project_containers(str(worktree_path))
 
-    # Remove symlinks (including .cursor)
+    # Remove symlinks
     if worktree_path.exists():
         remove_symlinks(worktree_path, SYMLINKED_FILES)
-
-        # Also remove .cursor symlink if it exists
-        cursor_link = worktree_path / ".cursor"
-        if cursor_link.is_symlink():
-            cursor_link.unlink()
-            if not is_json_mode():
-                console.print("[dim]-> Removed .cursor symlink[/dim]")
+        remove_repo_dir_symlinks(worktree_path, quiet=is_json_mode())
 
     # Remove worktree
     if not is_json_mode():
@@ -1186,13 +1150,7 @@ def disown(
         if not is_json_mode():
             console.print("Removing ABM symlinks...")
         remove_symlinks(worktree_path, SYMLINKED_FILES)
-
-        # Also remove .cursor symlink if it exists
-        cursor_link = worktree_path / ".cursor"
-        if cursor_link.is_symlink():
-            cursor_link.unlink()
-            if not is_json_mode():
-                console.print("[dim]-> Removed .cursor symlink[/dim]")
+        remove_repo_dir_symlinks(worktree_path, quiet=is_json_mode())
 
         # Remove breeze config directory (ABM-specific)
         breeze_config_dir = worktree_path / "files" / "airflow-breeze-config"

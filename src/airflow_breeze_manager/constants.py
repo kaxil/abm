@@ -58,9 +58,11 @@ SYMLINKED_FILES = [
     "CLAUDE.md",  # AI assistant context (separate from Airflow's CLAUDE.md)
 ]
 
-# Note: .cursor/ is gitignored in Airflow, so it won't be in worktrees via git.
-# ABM automatically creates a symlink from each worktree to the main repo's .cursor
-# directory during `abm add`, so Cursor rules work immediately in all projects.
+# Directories from the main Airflow repo that are symlinked into each worktree.
+# These are gitignored in Airflow, so they won't appear in worktrees via git.
+# ABM automatically creates symlinks during `abm add` and `abm adopt` so that
+# editor/AI configs (.cursor rules, .claude skills) work immediately.
+REPO_SYMLINKED_DIRS = [".claude", ".cursor"]
 
 # Headless mode settings
 HEADLESS_READY_TIMEOUT = 180  # seconds to wait for Airflow to become ready
