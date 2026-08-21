@@ -524,3 +524,42 @@ def test_get_running_containers_tmux_detection() -> None:
         result = get_running_containers()
         assert "test-project" in result
         assert result["test-project"]["is_start_airflow"] is True
+
+
+def test_create_symlinks_creates_link_when_target_absent(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    (project_dir / "PROJECT.md").write_text("notes")
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+
+    create_symlinks(project_dir, worktree, ["PROJECT.md"])
+
+    assert (worktree / "PROJECT.md").is_symlink()
+    assert (worktree / "PROJECT.md").resolve() == (project_dir / "PROJECT.md").resolve()
+
+
+def test_create_symlinks_preserves_existing_repo_file(tmp_path: Path) -> None:
+    """A worktree file ABM did not create must not be clobbered.
+
+    Airflow ships ``CLAUDE.md`` as a tracked symlink to ``AGENTS.md``; adopting the worktree
+    must leave that link (and the repo's agent instructions) intact.
+    """
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    (project_dir / "CLAUDE.md").write_text("abm per-project context")
+    (project_dir / "PROJECT.md").write_text("notes")
+
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / "AGENTS.md").write_text("airflow agent instructions")
+    (worktree / "CLAUDE.md").symlink_to("AGENTS.md")
+
+    create_symlinks(project_dir, worktree, ["PROJECT.md", "CLAUDE.md"])
+
+    # The repo's CLAUDE.md -> AGENTS.md link is preserved, not repointed to ABM's copy.
+    assert (worktree / "CLAUDE.md").is_symlink()
+    assert (worktree / "CLAUDE.md").readlink() == Path("AGENTS.md")
+    assert (worktree / "CLAUDE.md").read_text() == "airflow agent instructions"
+    # A file ABM owns (absent in the worktree) is still linked.
+    assert (worktree / "PROJECT.md").resolve() == (project_dir / "PROJECT.md").resolve()

@@ -204,6 +204,10 @@ def create_symlinks(project_dir: Path, worktree_path: Path, files: list[str]) ->
     """Create symlinks from project directory to worktree.
 
     Handles both files and directories. If source doesn't exist, creates an empty file.
+
+    A file that already exists in the worktree and was not created by ABM (for example
+    Airflow's committed ``CLAUDE.md`` symlink to ``AGENTS.md``) is left untouched, so the
+    repo's own file is never clobbered.
     """
     for file in files:
         source = project_dir / file
@@ -213,12 +217,15 @@ def create_symlinks(project_dir: Path, worktree_path: Path, files: list[str]) ->
         if not source.exists():
             source.touch()
 
-        # Remove existing file/symlink in worktree
         if target.exists() or target.is_symlink():
             if target.is_dir() and not target.is_symlink():
                 # Don't remove non-symlink directories
                 continue
-            target.unlink()
+            # Preserve a file/symlink ABM did not create. Overwriting it -- e.g. Airflow's
+            # tracked ``CLAUDE.md`` -> ``AGENTS.md`` -- would hide the repo's own file and
+            # leave the worktree with an uncommitted change.
+            console.print(f"[yellow]Leaving existing '{file}' in the worktree untouched (not managed by ABM).[/yellow]")
+            continue
 
         # Create symlink
         target.symlink_to(source)
