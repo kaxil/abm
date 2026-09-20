@@ -169,7 +169,7 @@ def _run_headless(sample_project, tmp_path, **kwargs):
                 project_dir,
                 worktree,
                 env={"PATH": "/usr/bin"},
-                compose_project="abm-test",
+                compose_project="breeze-abm-test",
                 **kwargs,
             )
         except (SystemExit, click.exceptions.Exit):
@@ -211,6 +211,16 @@ class TestStartAirflowHeadless:
         assert "3.12" in breeze_cmd
         assert "--backend" in breeze_cmd
         assert "sqlite" in breeze_cmd
+
+    @patch("airflow_breeze_manager.cli._wait_for_ready", return_value=True)
+    @patch("airflow_breeze_manager.cli.is_json_mode", return_value=True)
+    def test_passes_compose_project_as_breeze_flag(self, _mock_json, _mock_wait, sample_project, tmp_path):
+        """Breeze ignores COMPOSE_PROJECT_NAME, so the project must go on its command line."""
+        mock_popen = _run_headless(sample_project, tmp_path)
+
+        breeze_cmd = mock_popen.call_args[0][0]
+        idx = breeze_cmd.index("--project-name")
+        assert breeze_cmd[idx + 1] == "breeze-abm-test"
 
     @patch("airflow_breeze_manager.cli._wait_for_ready", return_value=True)
     @patch("airflow_breeze_manager.cli.is_json_mode", return_value=True)

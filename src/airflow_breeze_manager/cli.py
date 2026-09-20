@@ -1219,7 +1219,10 @@ def shell(
     port_env = project.ports.to_env_dict(project_name=project.name)
     env.update(port_env)
 
-    # Set compose project name for container isolation
+    # Compose project name for container isolation. Breeze always passes its own
+    # --project-name to docker compose, which beats COMPOSE_PROJECT_NAME, so the
+    # name must go on the breeze command line too (the env var covers direct
+    # docker compose calls).
     compose_project = get_docker_compose_project_name(project.name)
     env["COMPOSE_PROJECT_NAME"] = compose_project
 
@@ -1230,6 +1233,8 @@ def shell(
         project.python_version,
         "--backend",
         project.backend,
+        "--project-name",
+        compose_project,
     ]
     if extra_args:
         breeze_cmd.extend(extra_args)
@@ -1441,6 +1446,8 @@ def run(
         project.python_version,
         "--backend",
         project.backend,
+        "--project-name",
+        compose_project,
     ]
     if forward_ports:
         breeze_cmd.append("--forward-ports")
@@ -2172,7 +2179,10 @@ def start_airflow(
     port_env = project.ports.to_env_dict(project_name=project.name)
     env.update(port_env)
 
-    # Set compose project name for container isolation
+    # Compose project name for container isolation. Breeze always passes its own
+    # --project-name to docker compose, which beats COMPOSE_PROJECT_NAME, so the
+    # name must go on the breeze command line too (the env var covers direct
+    # docker compose calls).
     compose_project = get_docker_compose_project_name(project.name)
     env["COMPOSE_PROJECT_NAME"] = compose_project
 
@@ -2203,6 +2213,8 @@ def start_airflow(
         project.python_version,
         "--backend",
         project.backend,
+        "--project-name",
+        compose_project,
     ]
     if dev_mode:
         breeze_cmd.append("--dev-mode")
@@ -2381,6 +2393,8 @@ def _start_airflow_headless(
         project.python_version,
         "--backend",
         project.backend,
+        "--project-name",
+        compose_project,
         "--quiet",
         "--tty",
         "disabled",

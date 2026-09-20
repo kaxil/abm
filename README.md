@@ -234,10 +234,12 @@ Each project gets unique ports to avoid conflicts:
 ### Docker & Database Isolation
 
 **Container Isolation:**
-Each project uses a unique `COMPOSE_PROJECT_NAME` (e.g., `abm-my-feature`) to ensure:
+Each project runs as its own docker compose project (e.g., `breeze-abm-my-feature`), passed to breeze as `--project-name`, to ensure:
 - Container names don't conflict
 - Networks are isolated
-- Volumes are separate
+- Volumes are separate, so two projects never share the `/root/airflow` volume (sqlite DB and task logs)
+
+The `breeze-` prefix lets `breeze down` clean these projects up along with its own.
 
 **Database Isolation:**
 

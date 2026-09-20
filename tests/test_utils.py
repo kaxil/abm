@@ -56,8 +56,8 @@ def test_build_breeze_command_respects_global_breeze_env_var(tmp_path: Path) -> 
 
 def test_get_docker_compose_project_name() -> None:
     """Test Docker Compose project name generation."""
-    assert get_docker_compose_project_name("my-feature") == "abm-my-feature"
-    assert get_docker_compose_project_name("test_123") == "abm-test_123"
+    assert get_docker_compose_project_name("my-feature") == "breeze-abm-my-feature"
+    assert get_docker_compose_project_name("test_123") == "breeze-abm-test_123"
 
 
 def test_is_port_in_use_free_port() -> None:

@@ -295,10 +295,13 @@ def build_breeze_command(
 
 
 def get_docker_compose_project_name(project_name: str) -> str:
-    """Get Docker Compose project name for isolation."""
-    # Based on breeze pattern: airflow-test-{project_name}
-    # We use a different prefix to avoid conflicts with breeze
-    return f"abm-{project_name}"
+    """Get Docker Compose project name for isolation.
+
+    The ``breeze-`` prefix matters: ``breeze down`` only tears down compose
+    projects it recognises by that prefix, and ABM's own container discovery
+    filters on ``name=breeze``.
+    """
+    return f"breeze-abm-{project_name}"
 
 
 def is_port_in_use(port: int) -> bool:

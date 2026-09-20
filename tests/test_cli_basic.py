@@ -264,8 +264,8 @@ def test_cli_docker_compose_project_name() -> None:
     from airflow_breeze_manager.utils import get_docker_compose_project_name
 
     # This catches if someone breaks the naming convention
-    assert get_docker_compose_project_name("my-feature") == "abm-my-feature"
-    assert get_docker_compose_project_name("test_123") == "abm-test_123"
+    assert get_docker_compose_project_name("my-feature") == "breeze-abm-my-feature"
+    assert get_docker_compose_project_name("test_123") == "breeze-abm-test_123"
 
 
 def test_project_name_slash_sanitization() -> None:
