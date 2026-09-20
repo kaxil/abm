@@ -28,7 +28,6 @@ Manage multiple Airflow development environments with isolated breeze instances 
   - [Git Worktrees](#git-worktrees)
   - [Project-Specific Documentation](#project-specific-documentation)
     - [`PROJECT.md`](#projectmd)
-    - [`CLAUDE.md`](#claudemd)
 - [Commands Reference](#commands-reference)
   - [Global Flags](#global-flags)
   - [Core Commands](#core-commands)
@@ -273,24 +272,20 @@ ABM uses [git worktrees](https://git-scm.com/docs/git-worktree) to:
 
 ### Project-Specific Documentation
 
-Each project has two documentation files that persist across worktree removal/recreation:
+Each project has a documentation file that persists across worktree removal/recreation:
 
 #### `PROJECT.md`
 - Lives in `~/.airflow-breeze-manager/projects/{project}/PROJECT.md`
 - Symlinked into the worktree for easy editing
-- Human-readable notes about the project
-- Includes ports, branch info, and your notes
+- Ports, branch info, and your notes
+- Sections for "What I'm Working On", "Key Files", "Testing Strategy", and decisions, so AI assistants get per-feature context across sessions
 
-#### `CLAUDE.md`
-- Lives in `~/.airflow-breeze-manager/projects/{project}/CLAUDE.md`
-- Symlinked into the worktree as **project-specific AI context**
-- Templates for "What I'm Working On", "Key Files", "Testing Strategy", etc.
-- Helps Claude/Cursor maintain context across sessions
+ABM never overwrites a file the repo already ships. Airflow tracks `CLAUDE.md` as a symlink to `AGENTS.md`, so that link stays as it is in every worktree and `abm disown` leaves it alone. Point your assistant at `PROJECT.md` for the project-specific context.
 
 **Note about AI Editor Configurations:**
 - If your Airflow repo has a `.cursor` directory with rules, **ABM automatically creates a symlink** from each worktree to it
 - This means Cursor/AI editor rules work immediately in all worktrees without manual setup
-- Combined with ABM's project-specific `CLAUDE.md`, you get both global and per-feature context for AI assistants
+- Combined with `PROJECT.md`, you get both global and per-feature context for AI assistants
 
 ## Commands Reference
 
@@ -378,7 +373,7 @@ abm adopt ~/worktrees/my-feature
 # - Detect the branch name (feature-branch)
 # - Create project metadata
 # - Allocate ports
-# - Set up PROJECT.md and CLAUDE.md
+# - Set up PROJECT.md
 # - Mark it as adopted (protected from removal)
 ```
 
@@ -400,7 +395,7 @@ Options:
 
 **What gets removed:**
 - ABM project metadata
-- Symlinks (PROJECT.md, CLAUDE.md)
+- Symlinks (PROJECT.md)
 - Breeze configuration
 - Docker containers
 
@@ -757,19 +752,18 @@ abm init  # Uses environment variables
 └── projects/
     ├── my-feature/
     │   ├── .abm                 # Project metadata (JSON)
-    │   ├── PROJECT.md           # Human notes (symlinked to worktree)
-    │   └── CLAUDE.md            # AI context (symlinked to worktree)
+    │   └── PROJECT.md           # Notes and AI context (symlinked to worktree)
     └── another-feature/
         ├── .abm
-        ├── PROJECT.md
-        └── CLAUDE.md
+        └── PROJECT.md
 ```
 
 ### Documentation Files
 
-Each project has two documentation files for branch-specific context:
+Each project has a `PROJECT.md` for branch-specific context. It lives in the project folder
+(so it survives worktree removal), is symlinked into the worktree for easy editing, and is
+available to AI assistants for project-specific context:
 
-**`PROJECT.md`** - Human-readable notes:
 ```markdown
 # my-feature
 
@@ -786,39 +780,24 @@ Implement awesome feature
 - MySQL: 23307
 - Redis: 26380
 
-## Notes
-Add your notes here...
-```
-
-**`CLAUDE.md`** - AI assistant context:
-```markdown
-# Project Context for AI Assistants
-
-## Project: my-feature
-
-### What I'm Working On
+## What I'm Working On
 Adding a new execution model for deferred tasks that improves
 performance by 40% in high-throughput scenarios.
 
-### Key Files/Areas
+## Key Files/Areas
 - `airflow/models/taskinstance.py` - Main task execution logic
 - `airflow/executors/celery_executor.py` - Celery integration
 - `tests/models/test_taskinstance.py` - Test coverage
 
-### Testing Strategy
+## Testing Strategy
 1. Unit tests for new defer() method
 2. Integration tests with Celery backend
 3. Performance benchmarks (see dev/benchmark_defer.py)
 
-### Notes & Decisions
+## Notes & Decisions
 - Decided to use Redis for state tracking (not DB) for lower latency
 - Need to handle edge case where worker dies mid-defer
 ```
-
-**Both files:**
-- Live in the project folder (survive worktree removal)
-- Are symlinked into the worktree for easy editing
-- Are available to AI assistants for project-specific context
 
 ## Development Workflow
 
@@ -852,20 +831,19 @@ abm freeze feature-a  # Save space while waiting for review
 # Create project
 abm add my-feature --create-branch
 
-# Add context to CLAUDE.md for AI assistants
+# Add context to PROJECT.md for AI assistants
 cd ~/code/airflow-worktree/my-feature
-cat >> CLAUDE.md << 'EOF'
-### What I'm Working On
+cat >> PROJECT.md << 'EOF'
+## What I'm Working On
 Adding support for asset-based scheduling with dynamic dependencies.
 
-### Key Files
+## Key Files
 - airflow/models/asset.py
 - airflow/dag_processing/dag_processor.py
 EOF
 
-# Both CLAUDE.md and PROJECT.md are available to AI assistants
-# Airflow's main CLAUDE.md provides architecture context
-# Your project's CLAUDE.md provides feature-specific context
+# Airflow's own CLAUDE.md (-> AGENTS.md) provides architecture context
+# Your project's PROJECT.md provides feature-specific context
 abm shell my-feature
 ```
 

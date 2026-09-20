@@ -461,47 +461,20 @@ def add(
 - RabbitMQ: {ports.rabbitmq}
 - SSH: {ports.ssh}
 
-## Notes
-Add your notes here...
-""")
-
-    # Create CLAUDE.md template for AI assistant context
-    claude_md = project_dir / "CLAUDE.md"
-    if not claude_md.exists():
-        claude_md.write_text(f"""# Project Context for AI Assistants
-
-## Project: {project_name}
-
-### Branch
-`{branch}`
-
-### Description
-{project.description}
-
-### Development Environment
-- **Python**: {python_version}
-- **Backend**: {backend}
-- **Webserver**: http://localhost:{ports.webserver}
-
-### What I'm Working On
+## What I'm Working On
 <!-- Add context about what you're building, the problem you're solving, etc. -->
 
-
-### Key Files/Areas
+## Key Files/Areas
 <!-- List the main files or directories relevant to this work -->
 
-
-### Testing Strategy
+## Testing Strategy
 <!-- How to test the changes -->
 
-
-### Notes & Decisions
+## Notes & Decisions
 <!-- Important decisions, gotchas, things to remember -->
 
-
-### Related Issues/PRs
+## Related Issues/PRs
 <!-- Links to related GitHub issues, discussions, etc. -->
-
 """)
 
     # Create Breeze environment config for passing env vars into container
@@ -557,7 +530,7 @@ fi
         init_script.chmod(0o755)
 
     # Create symlinks for ABM-managed files
-    create_symlinks(project_dir, worktree_path, SYMLINKED_FILES)
+    create_symlinks(project_dir, worktree_path, SYMLINKED_FILES, quiet=is_json_mode())
 
     # Create symlinks for editor/AI config directories from main repo
     symlink_repo_dirs(Path(config.airflow_repo), worktree_path, quiet=is_json_mode())
@@ -678,47 +651,20 @@ def adopt(
 - RabbitMQ: {ports.rabbitmq}
 - SSH: {ports.ssh}
 
-## Notes
-Add your notes here...
-""")
-
-    # Create CLAUDE.md template for AI assistant context
-    claude_md = project_dir / "CLAUDE.md"
-    if not claude_md.exists():
-        claude_md.write_text(f"""# Project Context for AI Assistants
-
-## Project: {project_name}
-
-### Branch
-`{branch}`
-
-### Description
-{project.description}
-
-### Development Environment
-- **Python**: {python_version}
-- **Backend**: {backend}
-- **Webserver**: http://localhost:{ports.webserver}
-
-### What I'm Working On
+## What I'm Working On
 <!-- Add context about what you're building, the problem you're solving, etc. -->
 
-
-### Key Files/Areas
+## Key Files/Areas
 <!-- List the main files or directories relevant to this work -->
 
-
-### Testing Strategy
+## Testing Strategy
 <!-- How to test the changes -->
 
-
-### Notes & Decisions
+## Notes & Decisions
 <!-- Important decisions, gotchas, things to remember -->
 
-
-### Related Issues/PRs
+## Related Issues/PRs
 <!-- Links to related GitHub issues, discussions, etc. -->
-
 """)
 
     # Create Breeze environment config for passing env vars into container
@@ -774,7 +720,7 @@ fi
         init_script.chmod(0o755)
 
     # Create symlinks for ABM-managed files
-    create_symlinks(project_dir, worktree, SYMLINKED_FILES)
+    create_symlinks(project_dir, worktree, SYMLINKED_FILES, quiet=is_json_mode())
 
     # Create symlinks for editor/AI config directories from main repo
     symlink_repo_dirs(Path(config.airflow_repo), worktree, quiet=is_json_mode())
@@ -1067,7 +1013,7 @@ def remove(
 
     # Remove symlinks
     if worktree_path.exists():
-        remove_symlinks(worktree_path, SYMLINKED_FILES)
+        remove_symlinks(project_dir, worktree_path, SYMLINKED_FILES)
         remove_repo_dir_symlinks(worktree_path, quiet=is_json_mode())
 
     # Remove worktree
@@ -1150,7 +1096,7 @@ def disown(
     if worktree_path.exists():
         if not is_json_mode():
             console.print("Removing ABM symlinks...")
-        remove_symlinks(worktree_path, SYMLINKED_FILES)
+        remove_symlinks(project_dir, worktree_path, SYMLINKED_FILES)
         remove_repo_dir_symlinks(worktree_path, quiet=is_json_mode())
 
         # Remove breeze config directory (ABM-specific)

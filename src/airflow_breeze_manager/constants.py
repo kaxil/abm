@@ -52,10 +52,11 @@ PROJECT_FILES = {
 
 # Symlinked files from project folder to worktree
 # These files are stored in the project folder but symlinked to the worktree
-# so they persist across worktree removal/recreation
+# so they persist across worktree removal/recreation.
+# CLAUDE.md is deliberately not here: Airflow tracks it as a symlink to AGENTS.md,
+# so ABM's copy could never land in a worktree without clobbering the repo's file.
 SYMLINKED_FILES = [
-    "PROJECT.md",  # Project-specific notes and context
-    "CLAUDE.md",  # AI assistant context (separate from Airflow's CLAUDE.md)
+    "PROJECT.md",  # Project-specific notes and AI assistant context
 ]
 
 # Directories from the main Airflow repo that are symlinked into each worktree.
