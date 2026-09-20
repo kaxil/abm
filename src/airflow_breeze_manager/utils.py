@@ -200,14 +200,28 @@ def resolve_project_from_path(worktree_path: Path) -> str | None:
     return None
 
 
-def create_symlinks(project_dir: Path, worktree_path: Path, files: list[str]) -> None:
+def is_abm_symlink(target: Path, project_dir: Path) -> bool:
+    """Return True if ``target`` is a symlink ABM created for this project.
+
+    ABM links point at an absolute path inside the projects directory, so a link into
+    ``project_dir`` (or a sibling project directory, if the project was renamed) is
+    ours. A relative link like Airflow's committed ``CLAUDE.md -> AGENTS.md`` is not.
+    """
+    if not target.is_symlink():
+        return False
+    link = target.readlink()
+    return link.is_absolute() and project_dir.parent in link.parents
+
+
+def create_symlinks(project_dir: Path, worktree_path: Path, files: list[str], quiet: bool = False) -> None:
     """Create symlinks from project directory to worktree.
 
     Handles both files and directories. If source doesn't exist, creates an empty file.
 
-    A file that already exists in the worktree and was not created by ABM (for example
-    Airflow's committed ``CLAUDE.md`` symlink to ``AGENTS.md``) is left untouched, so the
-    repo's own file is never clobbered.
+    A link that already points at the project's copy is left as is, and a stale ABM link
+    (e.g. from a moved project directory) is repointed. Anything else already present in
+    the worktree (for example a file the repo tracks) is left untouched, so the repo's
+    own file is never clobbered.
     """
     for file in files:
         source = project_dir / file
@@ -217,25 +231,32 @@ def create_symlinks(project_dir: Path, worktree_path: Path, files: list[str]) ->
         if not source.exists():
             source.touch()
 
-        if target.exists() or target.is_symlink():
-            if target.is_dir() and not target.is_symlink():
-                # Don't remove non-symlink directories
+        if target.is_symlink():
+            if target.readlink() == source:
                 continue
-            # Preserve a file/symlink ABM did not create. Overwriting it -- e.g. Airflow's
-            # tracked ``CLAUDE.md`` -> ``AGENTS.md`` -- would hide the repo's own file and
-            # leave the worktree with an uncommitted change.
-            console.print(f"[yellow]Leaving existing '{file}' in the worktree untouched (not managed by ABM).[/yellow]")
+            if is_abm_symlink(target, project_dir):
+                target.unlink()
+            else:
+                if not quiet:
+                    console.print(
+                        f"[dim]Note: leaving existing '{file}' in the worktree untouched (not managed by ABM)[/dim]"
+                    )
+                continue
+        elif target.exists():
+            if not quiet:
+                console.print(
+                    f"[dim]Note: leaving existing '{file}' in the worktree untouched (not managed by ABM)[/dim]"
+                )
             continue
 
-        # Create symlink
         target.symlink_to(source)
 
 
-def remove_symlinks(worktree_path: Path, files: list[str]) -> None:
-    """Remove symlinks from worktree."""
+def remove_symlinks(project_dir: Path, worktree_path: Path, files: list[str]) -> None:
+    """Remove ABM's symlinks from the worktree, leaving any other file or link in place."""
     for file in files:
         target = worktree_path / file
-        if target.is_symlink():
+        if is_abm_symlink(target, project_dir):
             target.unlink()
 
 
