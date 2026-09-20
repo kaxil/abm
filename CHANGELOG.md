@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-20
+
+### Fixed
+- `abm add`/`abm adopt` no longer overwrite files the repo already ships. Airflow's tracked `CLAUDE.md -> AGENTS.md` symlink is left as is, and `abm disown` no longer deletes it. ABM only manages symlinks that point into its own projects directory.
+- Each project now runs in its own docker compose project (`breeze-abm-<project>`). Previously breeze's own `--project-name` won over `COMPOSE_PROJECT_NAME`, so all worktrees shared one container and one sqlite database.
+
+### Added
+- `.claude/` is symlinked from the main Airflow repo into every worktree alongside `.cursor/`, so Claude Code skills and settings work in all worktrees.
+- Breeze runs from the worktree's own `dev/breeze` via `uv run`, so each worktree uses its matching breeze version. Set `ABM_USE_GLOBAL_BREEZE=1` to force the global install.
+- `abm start-airflow --mount-ui-dist` copies the pre-built UI from the main repo when the worktree has none.
+- `abm start-airflow` prints a JWT token once Airflow is ready (`token` field in `--json` mode).
+
+### Changed
+- The per-project `CLAUDE.md` is gone. Its AI-context sections (What I'm Working On, Key Files, Testing Strategy, Notes & Decisions) now live in `PROJECT.md`.
+
 ## [0.3.1] - 2026-03-25
 
 ### Fixed
