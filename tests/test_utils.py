@@ -4,14 +4,17 @@ import json
 import socket
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import create_autospec, patch
 
+import docker
 import pytest
+from docker.models.containers import Container
 
 from airflow_breeze_manager.models import ProjectMetadata, ProjectPorts
 from airflow_breeze_manager.utils import (
     allocate_ports,
     build_breeze_command,
+    container_project,
     create_symlinks,
     find_alternative_port,
     get_all_projects,
@@ -20,6 +23,7 @@ from airflow_breeze_manager.utils import (
     get_project,
     is_port_in_use,
     remove_symlinks,
+    stop_project_containers,
 )
 
 
@@ -526,6 +530,91 @@ def test_get_running_containers_tmux_detection() -> None:
         result = get_running_containers()
         assert "test-project" in result
         assert result["test-project"]["is_start_airflow"] is True
+
+
+@pytest.mark.parametrize(
+    ("labels", "expected"),
+    [
+        pytest.param(
+            {
+                "com.docker.compose.project": "breeze-abm-nested",
+                "com.docker.compose.project.working_dir": "/repo/.claude/worktrees/nested/scripts/ci/docker-compose",
+            },
+            "nested",
+            id="compose-project-label",
+        ),
+        pytest.param(
+            {
+                "com.docker.compose.project": "breeze",
+                "com.docker.compose.project.working_dir": "/repo/.claude/worktrees/nested/scripts/ci/docker-compose",
+            },
+            "nested",
+            id="nested-worktree-beats-parent-repo",
+        ),
+        pytest.param(
+            {
+                "com.docker.compose.project": "breeze",
+                "com.docker.compose.project.working_dir": "/repo/scripts/ci/docker-compose",
+            },
+            "root",
+            id="parent-repo",
+        ),
+        pytest.param(
+            {
+                "com.docker.compose.project": "breeze",
+                "com.docker.compose.project.working_dir": "/repo-other/scripts/ci/docker-compose",
+            },
+            None,
+            id="sibling-path-sharing-prefix",
+        ),
+    ],
+)
+def test_container_project_attributes_to_most_specific_project(
+    labels: dict[str, str], expected: str | None, nested_projects: list[ProjectMetadata]
+) -> None:
+    """A worktree nested inside another project's worktree must not be credited to the parent."""
+    assert container_project(labels, nested_projects) == expected
+
+
+@pytest.fixture
+def nested_projects(sample_project_ports: ProjectPorts) -> list[ProjectMetadata]:
+    """A project adopted at the repo root, plus one in a worktree nested under it."""
+    return [
+        ProjectMetadata(name="root", branch="main", worktree_path="/repo", ports=sample_project_ports),
+        ProjectMetadata(
+            name="nested",
+            branch="feature",
+            worktree_path="/repo/.claude/worktrees/nested",
+            ports=sample_project_ports,
+        ),
+    ]
+
+
+def test_stop_project_containers_leaves_nested_worktree_containers_running(
+    nested_projects: list[ProjectMetadata],
+) -> None:
+    """Stopping the repo-root project must not stop containers of a worktree nested inside it."""
+    root_container = create_autospec(Container, instance=True)
+    root_container.labels = {
+        "com.docker.compose.project": "breeze",
+        "com.docker.compose.project.working_dir": "/repo/scripts/ci/docker-compose",
+    }
+    nested_container = create_autospec(Container, instance=True)
+    nested_container.labels = {
+        "com.docker.compose.project": "breeze-abm-nested",
+        "com.docker.compose.project.working_dir": "/repo/.claude/worktrees/nested/scripts/ci/docker-compose",
+    }
+
+    with (
+        patch("airflow_breeze_manager.utils.get_all_projects", autospec=True, return_value=nested_projects),
+        patch.object(docker, "from_env", autospec=True) as mock_docker,
+    ):
+        mock_docker.return_value.containers.list.return_value = [root_container, nested_container]
+
+        stop_project_containers("root")
+
+    root_container.stop.assert_called_once_with(timeout=10)
+    nested_container.stop.assert_not_called()
 
 
 @pytest.fixture
