@@ -1009,7 +1009,7 @@ def remove(
     # Stop Docker containers by targeting this specific worktree
     if not is_json_mode():
         console.print("Stopping Docker containers...")
-    stop_project_containers(str(worktree_path))
+    stop_project_containers(project.name)
 
     # Remove symlinks
     if worktree_path.exists():
@@ -1090,7 +1090,7 @@ def disown(
     # Stop Docker containers
     if not is_json_mode():
         console.print("Stopping Docker containers...")
-    stop_project_containers(str(worktree_path))
+    stop_project_containers(project.name)
 
     # Remove symlinks
     if worktree_path.exists():
@@ -1470,11 +1470,10 @@ def docker_down(
 ) -> None:
     """Stop Docker containers."""
     project, _ = require_project(project_name)
-    worktree_path = Path(project.worktree_path)
 
     if not is_json_mode():
         console.print(f"[yellow]Stopping containers for '{project.name}'...[/yellow]")
-    stop_project_containers(str(worktree_path))
+    stop_project_containers(project.name)
 
     if is_json_mode():
         json_success({"project": project.name, "action": "down"})
@@ -2413,7 +2412,7 @@ def stop_airflow(
 ) -> None:
     """Stop a running Airflow instance for a project."""
     project, _project_dir = require_project(project_name)
-    stop_project_containers(project.worktree_path)
+    stop_project_containers(project.name)
     if is_json_mode():
         json_success({"project": project.name, "stopped": True})
     console.print(f"[green]Stopped Airflow for '{project.name}'[/green]")

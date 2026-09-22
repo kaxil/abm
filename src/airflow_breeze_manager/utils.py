@@ -391,20 +391,17 @@ def check_webserver_health(port: int, timeout: float = 1.0) -> str:
     return HEALTH_UNHEALTHY
 
 
-def stop_project_containers(worktree_path: str) -> None:
+def stop_project_containers(project_name: str) -> None:
     """Stop all Docker containers for a specific ABM project."""
     import docker
 
     client = docker.from_env()
     containers = client.containers.list()
+    all_projects = get_all_projects()
 
     stopped_count = 0
     for container in containers:
-        labels = container.labels
-        working_dir = labels.get("com.docker.compose.project.working_dir", "")
-
-        # Check if this container belongs to the specified worktree
-        if working_dir.startswith(str(worktree_path)):
+        if container_project(container.labels, all_projects) == project_name:
             try:
                 # Refresh container to get latest state
                 container.reload()
@@ -424,6 +421,33 @@ def stop_project_containers(worktree_path: str) -> None:
         console.print("[dim]No running containers found for this project[/dim]")
 
 
+def container_project(labels: dict[str, str], projects: list[ProjectMetadata]) -> str | None:
+    """Return the ABM project a container belongs to, or None if it is not ABM's.
+
+    The compose project label is exact, so it wins. Containers started by a bare
+    ``breeze`` (no ABM project name) fall back to their compose working directory,
+    where the most specific worktree wins: a worktree nested inside another
+    project's worktree (``repo/.claude/worktrees/x`` inside ``repo``) belongs to
+    the nested project, not the parent.
+    """
+    compose_project = labels.get("com.docker.compose.project", "")
+    for project in projects:
+        if get_docker_compose_project_name(project.name) == compose_project:
+            return project.name
+
+    working_dir = labels.get("com.docker.compose.project.working_dir", "")
+    if not working_dir:
+        return None
+    matches = [
+        p
+        for p in projects
+        if working_dir == str(Path(p.worktree_path)) or working_dir.startswith(str(Path(p.worktree_path)) + os.sep)
+    ]
+    if not matches:
+        return None
+    return max(matches, key=lambda p: len(str(Path(p.worktree_path)))).name
+
+
 def get_running_containers() -> dict[str, dict[str, Any]]:
     """Get running Docker containers for ABM projects.
 
@@ -438,53 +462,46 @@ def get_running_containers() -> dict[str, dict[str, Any]]:
         client = docker.from_env()
         containers = client.containers.list()
 
-        # Get all ABM projects to map worktree paths to project names
         all_projects = get_all_projects()
-        worktree_to_project = {str(Path(p.worktree_path)): p.name for p in all_projects}
 
-        # Group containers by ABM project (using working directory)
+        # Group containers by ABM project
         project_containers: dict[str, dict[str, Any]] = {}
 
         for container in containers:
             labels = container.labels
+            project_name = container_project(labels, all_projects)
+            if project_name is None:
+                continue
 
-            # Get the working directory from compose labels
-            working_dir = labels.get("com.docker.compose.project.working_dir", "")
+            service_name = labels.get("com.docker.compose.service", "unknown")
 
-            # Check if this container is from an ABM project worktree
-            for worktree_path, project_name in worktree_to_project.items():
-                if working_dir.startswith(worktree_path):
-                    service_name = labels.get("com.docker.compose.service", "unknown")
+            if project_name not in project_containers:
+                project_containers[project_name] = {
+                    "services": [],
+                    "is_start_airflow": False,
+                }
 
-                    if project_name not in project_containers:
-                        project_containers[project_name] = {
-                            "services": [],
-                            "is_start_airflow": False,
-                        }
+            project_containers[project_name]["services"].append(service_name)
 
-                    project_containers[project_name]["services"].append(service_name)
-
-                    # Check if running start-airflow (has tmux/mprocs and multiple airflow processes)
-                    # Also detects headless mode (airflow processes without a terminal multiplexer)
-                    try:
-                        top_output = container.top()
-                        processes = top_output.get("Processes", [])
-                        for process in processes:
-                            # Process is a list: [PID, USER, TIME, COMMAND]
-                            if len(process) > 3:
-                                cmd_str = str(process[3]).lower()
-                                if "tmux" in cmd_str or "mprocs" in cmd_str:
-                                    project_containers[project_name]["is_start_airflow"] = True
-                                    break
-                                # Headless mode: airflow processes running directly
-                                if "airflow" in cmd_str and ("scheduler" in cmd_str or "api-server" in cmd_str):
-                                    project_containers[project_name]["is_start_airflow"] = True
-                                    break
-                    except Exception:
-                        # If we can't check, assume shell
-                        pass
-
-                    break
+            # Check if running start-airflow (has tmux/mprocs and multiple airflow processes)
+            # Also detects headless mode (airflow processes without a terminal multiplexer)
+            try:
+                top_output = container.top()
+                processes = top_output.get("Processes", [])
+                for process in processes:
+                    # Process is a list: [PID, USER, TIME, COMMAND]
+                    if len(process) > 3:
+                        cmd_str = str(process[3]).lower()
+                        if "tmux" in cmd_str or "mprocs" in cmd_str:
+                            project_containers[project_name]["is_start_airflow"] = True
+                            break
+                        # Headless mode: airflow processes running directly
+                        if "airflow" in cmd_str and ("scheduler" in cmd_str or "api-server" in cmd_str):
+                            project_containers[project_name]["is_start_airflow"] = True
+                            break
+            except Exception:
+                # If we can't check, assume shell
+                pass
 
         return project_containers
     except Exception:
