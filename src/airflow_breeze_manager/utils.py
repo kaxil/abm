@@ -213,45 +213,6 @@ def is_abm_symlink(target: Path, project_dir: Path) -> bool:
     return link.is_absolute() and project_dir.parent in link.parents
 
 
-def create_symlinks(project_dir: Path, worktree_path: Path, files: list[str], quiet: bool = False) -> None:
-    """Create symlinks from project directory to worktree.
-
-    Handles both files and directories. If source doesn't exist, creates an empty file.
-
-    A link that already points at the project's copy is left as is, and a stale ABM link
-    (e.g. from a moved project directory) is repointed. Anything else already present in
-    the worktree (for example a file the repo tracks) is left untouched, so the repo's
-    own file is never clobbered.
-    """
-    for file in files:
-        source = project_dir / file
-        target = worktree_path / file
-
-        # Create source file if it doesn't exist (files only)
-        if not source.exists():
-            source.touch()
-
-        if target.is_symlink():
-            if target.readlink() == source:
-                continue
-            if is_abm_symlink(target, project_dir):
-                target.unlink()
-            else:
-                if not quiet:
-                    console.print(
-                        f"[dim]Note: leaving existing '{file}' in the worktree untouched (not managed by ABM)[/dim]"
-                    )
-                continue
-        elif target.exists():
-            if not quiet:
-                console.print(
-                    f"[dim]Note: leaving existing '{file}' in the worktree untouched (not managed by ABM)[/dim]"
-                )
-            continue
-
-        target.symlink_to(source)
-
-
 def remove_symlinks(project_dir: Path, worktree_path: Path, files: list[str]) -> None:
     """Remove ABM's symlinks from the worktree, leaving any other file or link in place."""
     for file in files:

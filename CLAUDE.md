@@ -11,7 +11,6 @@ This file provides guidance to Claude Code when working with this repository.
 - **Git Worktrees**: Manage multiple branches simultaneously
 - **Port Isolation**: Each project gets unique ports for all services (webserver, flower, postgres, mysql, redis)
 - **Docker Isolation**: Uses `COMPOSE_PROJECT_NAME` to isolate containers
-- **PROJECT.md**: Branch-specific documentation that survives worktree removal
 - **PR Tracking**: Link GitHub PRs to projects
 - **Freeze/Thaw**: Save disk space by removing/restoring dependencies
 - **REST API Client**: `abm api` command for direct Airflow API access (auto-detects v1/v2)
@@ -37,7 +36,7 @@ This file provides guidance to Claude Code when working with this repository.
    - Git worktree in `worktree_base/project`
    - Project folder in `~/.airflow-breeze-manager/projects/project/`
    - Allocates unique ports
-   - Creates PROJECT.md and symlinks to worktree
+   - Symlinks `.claude` and `.cursor` from the main repo into the worktree
    - Sets `managed_worktree=True` (ABM created the worktree)
 3. User runs `abm adopt /path/to/worktree` → Adopts existing worktree:
    - Validates worktree is from configured Airflow repo
@@ -118,7 +117,7 @@ src/airflow_breeze_manager/
 1. **Project Detection**: Commands can auto-detect project from current directory
 2. **Require Project**: Use `require_project()` helper for validation
 3. **Port Environment**: Set `WEB_HOST_PORT`, etc. before running breeze
-4. **Symlinks**: PROJECT.md lives in project folder, symlinked to worktree
+4. **Symlinks**: Only touch symlinks ABM created (`is_abm_symlink`); never overwrite files the repo ships
 
 ## Common Tasks
 

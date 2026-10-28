@@ -15,7 +15,6 @@ from airflow_breeze_manager.utils import (
     allocate_ports,
     build_breeze_command,
     container_project,
-    create_symlinks,
     find_alternative_port,
     get_all_projects,
     get_conflicting_ports,
@@ -236,26 +235,6 @@ def test_get_project_not_exists() -> None:
         with patch("airflow_breeze_manager.utils.PROJECTS_DIR", projects_dir):
             project = get_project("nonexistent")
             assert project is None
-
-
-def test_create_symlinks() -> None:
-    """Test creating symlinks."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        project_dir = Path(tmpdir) / "project"
-        worktree_dir = Path(tmpdir) / "worktree"
-        project_dir.mkdir()
-        worktree_dir.mkdir()
-
-        # Create files in project dir
-        (project_dir / "PROJECT.md").write_text("# Project")
-        (project_dir / "CLAUDE.md").write_text("# Claude")
-
-        create_symlinks(project_dir, worktree_dir, ["PROJECT.md", "CLAUDE.md"])
-
-        # Check symlinks were created
-        assert (worktree_dir / "PROJECT.md").is_symlink()
-        assert (worktree_dir / "CLAUDE.md").is_symlink()
-        assert (worktree_dir / "PROJECT.md").read_text() == "# Project"
 
 
 def test_remove_symlinks() -> None:
@@ -628,75 +607,15 @@ def symlink_dirs(tmp_path: Path) -> tuple[Path, Path]:
     return project_dir, worktree
 
 
-def test_create_symlinks_creates_link_when_target_absent(symlink_dirs: tuple[Path, Path]) -> None:
-    project_dir, worktree = symlink_dirs
-
-    create_symlinks(project_dir, worktree, ["PROJECT.md"])
-
-    assert (worktree / "PROJECT.md").is_symlink()
-    assert (worktree / "PROJECT.md").readlink() == project_dir / "PROJECT.md"
-
-
-def test_create_symlinks_preserves_existing_repo_symlink(symlink_dirs: tuple[Path, Path]) -> None:
-    """A worktree file ABM did not create must not be clobbered.
-
-    Airflow ships ``CLAUDE.md`` as a tracked symlink to ``AGENTS.md``; adopting the worktree
-    must leave that link (and the repo's agent instructions) intact.
-    """
-    project_dir, worktree = symlink_dirs
-    (project_dir / "CLAUDE.md").write_text("abm per-project context")
-    (worktree / "AGENTS.md").write_text("airflow agent instructions")
-    (worktree / "CLAUDE.md").symlink_to("AGENTS.md")
-
-    create_symlinks(project_dir, worktree, ["PROJECT.md", "CLAUDE.md"])
-
-    assert (worktree / "CLAUDE.md").readlink() == Path("AGENTS.md")
-    assert (worktree / "CLAUDE.md").read_text() == "airflow agent instructions"
-    assert (worktree / "PROJECT.md").readlink() == project_dir / "PROJECT.md"
-
-
-def test_create_symlinks_preserves_existing_regular_file(symlink_dirs: tuple[Path, Path]) -> None:
-    project_dir, worktree = symlink_dirs
-    (worktree / "PROJECT.md").write_text("repo's own file")
-
-    create_symlinks(project_dir, worktree, ["PROJECT.md"])
-
-    assert not (worktree / "PROJECT.md").is_symlink()
-    assert (worktree / "PROJECT.md").read_text() == "repo's own file"
-
-
-def test_create_symlinks_is_idempotent_and_silent_for_own_link(
-    symlink_dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
-) -> None:
-    project_dir, worktree = symlink_dirs
-    create_symlinks(project_dir, worktree, ["PROJECT.md"])
-
-    create_symlinks(project_dir, worktree, ["PROJECT.md"])
-
-    assert (worktree / "PROJECT.md").readlink() == project_dir / "PROJECT.md"
-    assert "not managed by ABM" not in capsys.readouterr().out
-
-
-def test_create_symlinks_repoints_stale_abm_link(symlink_dirs: tuple[Path, Path]) -> None:
-    """A link left behind by a renamed project dir points into PROJECTS_DIR, so ABM owns it."""
+def test_remove_symlinks_removes_link_into_another_project(symlink_dirs: tuple[Path, Path]) -> None:
+    """Re-adopting a worktree drops the PROJECT.md link an earlier project left in it."""
     project_dir, worktree = symlink_dirs
     old_project_dir = project_dir.parent / "old-name"
     (worktree / "PROJECT.md").symlink_to(old_project_dir / "PROJECT.md")
 
-    create_symlinks(project_dir, worktree, ["PROJECT.md"])
+    remove_symlinks(project_dir, worktree, ["PROJECT.md"])
 
-    assert (worktree / "PROJECT.md").readlink() == project_dir / "PROJECT.md"
-
-
-def test_create_symlinks_quiet_suppresses_note(
-    symlink_dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
-) -> None:
-    project_dir, worktree = symlink_dirs
-    (worktree / "PROJECT.md").write_text("repo's own file")
-
-    create_symlinks(project_dir, worktree, ["PROJECT.md"], quiet=True)
-
-    assert capsys.readouterr().out == ""
+    assert not (worktree / "PROJECT.md").is_symlink()
 
 
 def test_remove_symlinks_leaves_foreign_symlink_alone(symlink_dirs: tuple[Path, Path]) -> None:
