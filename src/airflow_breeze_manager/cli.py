@@ -24,9 +24,9 @@ from airflow_breeze_manager.constants import (
     HEALTH_HEALTHY,
     HEALTH_NOT_APPLICABLE,
     HEALTH_NOT_RUNNING,
+    LEGACY_SYMLINKED_FILES,
     PROJECTS_DIR,
     SCHEMA_VERSION,
-    SYMLINKED_FILES,
 )
 from airflow_breeze_manager.models import GlobalConfig, ProjectMetadata
 from airflow_breeze_manager.output import (
@@ -53,7 +53,6 @@ from airflow_breeze_manager.utils import (
     build_breeze_command,
     check_webserver_health,
     console,
-    create_symlinks,
     find_alternative_port,
     get_all_projects,
     get_conflicting_ports,
@@ -440,43 +439,6 @@ def add(
     )
     project.save(project_dir)
 
-    # Create PROJECT.md template
-    project_md = project_dir / "PROJECT.md"
-    if not project_md.exists():
-        project_md.write_text(f"""# {project_name}
-
-## Description
-{project.description}
-
-## Branch
-`{branch}`
-
-## Ports
-- Webserver: {ports.webserver}
-- Flower: {ports.flower}
-- Postgres: {ports.postgres}
-- MySQL: {ports.mysql}
-- MSSQL: {ports.mssql}
-- Redis: {ports.redis}
-- RabbitMQ: {ports.rabbitmq}
-- SSH: {ports.ssh}
-
-## What I'm Working On
-<!-- Add context about what you're building, the problem you're solving, etc. -->
-
-## Key Files/Areas
-<!-- List the main files or directories relevant to this work -->
-
-## Testing Strategy
-<!-- How to test the changes -->
-
-## Notes & Decisions
-<!-- Important decisions, gotchas, things to remember -->
-
-## Related Issues/PRs
-<!-- Links to related GitHub issues, discussions, etc. -->
-""")
-
     # Create Breeze environment config for passing env vars into container
     breeze_config_dir = worktree_path / "files" / "airflow-breeze-config"
     breeze_config_dir.mkdir(parents=True, exist_ok=True)
@@ -528,9 +490,6 @@ fi
 """
         init_script.write_text(script_content)
         init_script.chmod(0o755)
-
-    # Create symlinks for ABM-managed files
-    create_symlinks(project_dir, worktree_path, SYMLINKED_FILES, quiet=is_json_mode())
 
     # Create symlinks for editor/AI config directories from main repo
     symlink_repo_dirs(Path(config.airflow_repo), worktree_path, quiet=is_json_mode())
@@ -630,43 +589,6 @@ def adopt(
     )
     project.save(project_dir)
 
-    # Create PROJECT.md template
-    project_md = project_dir / "PROJECT.md"
-    if not project_md.exists():
-        project_md.write_text(f"""# {project_name}
-
-## Description
-{project.description}
-
-## Branch
-`{branch}`
-
-## Ports
-- Webserver: {ports.webserver}
-- Flower: {ports.flower}
-- Postgres: {ports.postgres}
-- MySQL: {ports.mysql}
-- MSSQL: {ports.mssql}
-- Redis: {ports.redis}
-- RabbitMQ: {ports.rabbitmq}
-- SSH: {ports.ssh}
-
-## What I'm Working On
-<!-- Add context about what you're building, the problem you're solving, etc. -->
-
-## Key Files/Areas
-<!-- List the main files or directories relevant to this work -->
-
-## Testing Strategy
-<!-- How to test the changes -->
-
-## Notes & Decisions
-<!-- Important decisions, gotchas, things to remember -->
-
-## Related Issues/PRs
-<!-- Links to related GitHub issues, discussions, etc. -->
-""")
-
     # Create Breeze environment config for passing env vars into container
     breeze_config_dir = worktree / "files" / "airflow-breeze-config"
     breeze_config_dir.mkdir(parents=True, exist_ok=True)
@@ -719,8 +641,8 @@ fi
         init_script.write_text(script_content)
         init_script.chmod(0o755)
 
-    # Create symlinks for ABM-managed files
-    create_symlinks(project_dir, worktree, SYMLINKED_FILES, quiet=is_json_mode())
+    # Drop a PROJECT.md link left by an earlier ABM version (re-adopting an old worktree)
+    remove_symlinks(project_dir, worktree, LEGACY_SYMLINKED_FILES)
 
     # Create symlinks for editor/AI config directories from main repo
     symlink_repo_dirs(Path(config.airflow_repo), worktree, quiet=is_json_mode())
@@ -961,10 +883,6 @@ def status(
 @app.command(rich_help_panel="Core Commands")
 def remove(
     project_name: Annotated[str, typer.Argument(help="Project name")],
-    keep_docs: Annotated[
-        bool,
-        typer.Option("--keep-docs", help="Keep PROJECT.md for later use"),
-    ] = False,
     delete_branch: Annotated[
         bool,
         typer.Option("--delete-branch", help="Delete the git branch (WARNING: destructive)"),
@@ -1013,7 +931,7 @@ def remove(
 
     # Remove symlinks
     if worktree_path.exists():
-        remove_symlinks(project_dir, worktree_path, SYMLINKED_FILES)
+        remove_symlinks(project_dir, worktree_path, LEGACY_SYMLINKED_FILES)
         remove_repo_dir_symlinks(worktree_path, quiet=is_json_mode())
 
     # Remove worktree
@@ -1042,22 +960,10 @@ def remove(
             console.print("[dim]The branch may not exist or may be currently checked out[/dim]")
 
     # Remove project directory
-    if keep_docs:
-        # Only keep PROJECT.md
-        for item in project_dir.iterdir():
-            if item.name != "PROJECT.md":
-                if item.is_dir():
-                    shutil.rmtree(item)
-                else:
-                    item.unlink()
-        if is_json_mode():
-            json_success({"project": project_name, "removed": True, "kept_docs": True})
-        console.print(f"Project removed (kept PROJECT.md in {project_dir})")
-    else:
-        shutil.rmtree(project_dir)
-        if is_json_mode():
-            json_success({"project": project_name, "removed": True, "kept_docs": False})
-        console.print(f"Project '{project_name}' removed completely")
+    shutil.rmtree(project_dir)
+    if is_json_mode():
+        json_success({"project": project_name, "removed": True})
+    console.print(f"Project '{project_name}' removed completely")
 
 
 @app.command(rich_help_panel="Core Commands")
@@ -1096,7 +1002,7 @@ def disown(
     if worktree_path.exists():
         if not is_json_mode():
             console.print("Removing ABM symlinks...")
-        remove_symlinks(project_dir, worktree_path, SYMLINKED_FILES)
+        remove_symlinks(project_dir, worktree_path, LEGACY_SYMLINKED_FILES)
         remove_repo_dir_symlinks(worktree_path, quiet=is_json_mode())
 
         # Remove breeze config directory (ABM-specific)
@@ -1115,7 +1021,6 @@ def disown(
 
     console.print(f"[green]Project '{project.name}' disowned[/green]")
     console.print(f"   Worktree preserved at: {worktree_path}")
-    console.print("   PROJECT.md moved to worktree (if it existed)")
     console.print("[dim]You can now manage this worktree manually or re-adopt it later[/dim]")
 
 
@@ -1805,7 +1710,6 @@ _abm() {
                     ;;
                 remove)
                     _arguments \\
-                        '--keep-docs[Keep PROJECT.md]' \\
                         '--delete-branch[Delete the git branch]' \\
                         '(-f --force)'{-f,--force}'[Skip confirmation]' \\
                         '--help[Show help]' \\
@@ -1997,7 +1901,6 @@ fi
                     ;;
                 remove)
                     _arguments \\
-                        '--keep-docs[Keep PROJECT.md]' \\
                         '--delete-branch[Delete the git branch]' \\
                         '(-f --force)'{-f,--force}'[Skip confirmation]' \\
                         '--help[Show help]' \\

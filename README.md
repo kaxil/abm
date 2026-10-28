@@ -26,8 +26,7 @@ Manage multiple Airflow development environments with isolated breeze instances 
   - [Docker & Database Isolation](#docker--database-isolation)
   - [UI Identification](#ui-identification)
   - [Git Worktrees](#git-worktrees)
-  - [Project-Specific Documentation](#project-specific-documentation)
-    - [`PROJECT.md`](#projectmd)
+  - [Editor and AI Configs](#editor-and-ai-configs)
 - [Commands Reference](#commands-reference)
   - [Global Flags](#global-flags)
   - [Core Commands](#core-commands)
@@ -59,7 +58,6 @@ Manage multiple Airflow development environments with isolated breeze instances 
 - [Configuration](#configuration)
   - [Environment Variables](#environment-variables)
   - [Files & Directories](#files--directories)
-  - [Documentation Files](#documentation-files)
 - [Development Workflow](#development-workflow)
   - [Typical Multi-Branch Workflow](#typical-multi-branch-workflow)
   - [Working with Claude Code](#working-with-claude-code)
@@ -92,7 +90,6 @@ ABM solves this by giving each feature branch its own **complete isolated enviro
 - ✅ Separate git worktrees for each branch
 - ✅ Unique port assignments (webserver, flower, postgres, mysql, redis)
 - ✅ Isolated Docker containers (via COMPOSE_PROJECT_NAME)
-- ✅ Branch-specific documentation (PROJECT.md)
 - ✅ GitHub PR tracking
 - ✅ Disk space management (freeze/thaw)
 
@@ -162,7 +159,6 @@ abm start-airflow my-feature
 **What happens:**
 - Creates a git worktree for the branch
 - Allocates unique ports for all services
-- Creates a PROJECT.md file for branch-specific notes
 - Sets up isolated environment configuration
 - **Note:** Project names with slashes are automatically sanitized (e.g., `feature/foo` → `feature-foo`)
 
@@ -201,7 +197,6 @@ abm thaw old-feature
 
 # Remove project
 abm remove my-feature
-abm remove my-feature --keep-docs  # Keep PROJECT.md for later
 ```
 
 ## How It Works
@@ -270,22 +265,11 @@ ABM uses [git worktrees](https://git-scm.com/docs/git-worktree) to:
 - Avoid switching branches in your main repo
 - Keep each project's state independent
 
-### Project-Specific Documentation
+### Editor and AI Configs
 
-Each project has a documentation file that persists across worktree removal/recreation:
+`.claude/` and `.cursor/` are gitignored in Airflow, so a new worktree doesn't get them. ABM symlinks both from the main Airflow repo into every worktree, so Claude Code skills and settings and Cursor rules work there without setup.
 
-#### `PROJECT.md`
-- Lives in `~/.airflow-breeze-manager/projects/{project}/PROJECT.md`
-- Symlinked into the worktree for easy editing
-- Ports, branch info, and your notes
-- Sections for "What I'm Working On", "Key Files", "Testing Strategy", and decisions, so AI assistants get per-feature context across sessions
-
-ABM never overwrites a file the repo already ships. Airflow tracks `CLAUDE.md` as a symlink to `AGENTS.md`, so that link stays as it is in every worktree and `abm disown` leaves it alone. Point your assistant at `PROJECT.md` for the project-specific context.
-
-**Note about AI Editor Configurations:**
-- If your Airflow repo has a `.cursor` directory with rules, **ABM automatically creates a symlink** from each worktree to it
-- This means Cursor/AI editor rules work immediately in all worktrees without manual setup
-- Combined with `PROJECT.md`, you get both global and per-feature context for AI assistants
+ABM never overwrites a file the repo already ships. Airflow tracks `CLAUDE.md` as a symlink to `AGENTS.md`, so that link stays as it is in every worktree and `abm disown` leaves it alone.
 
 ## Commands Reference
 
@@ -373,7 +357,6 @@ abm adopt ~/worktrees/my-feature
 # - Detect the branch name (feature-branch)
 # - Create project metadata
 # - Allocate ports
-# - Set up PROJECT.md
 # - Mark it as adopted (protected from removal)
 ```
 
@@ -395,7 +378,7 @@ Options:
 
 **What gets removed:**
 - ABM project metadata
-- Symlinks (PROJECT.md)
+- `.claude` and `.cursor` symlinks
 - Breeze configuration
 - Docker containers
 
@@ -507,10 +490,9 @@ abm exec python -c "print('hi')"  # Auto-detect project, run command
 Remove a project and clean up resources (stops containers, removes worktree and metadata).
 
 ```bash
-abm remove <project> [--keep-docs] [--force] [--delete-branch]
+abm remove <project> [--force] [--delete-branch]
 
 Options:
-  --keep-docs       Keep PROJECT.md file
   --delete-branch   Delete the git branch (WARNING: destructive)
   -f, --force       Skip confirmation & allow removing adopted projects
 ```
@@ -518,7 +500,7 @@ Options:
 **What it does:**
 1. Stops and removes all Docker containers for this project
 2. Removes the git worktree
-3. Deletes project metadata (or keeps only PROJECT.md if `--keep-docs`)
+3. Deletes project metadata
 
 **Protection for adopted projects:**
 - Adopted projects (created with `abm adopt`) require `--force` to remove
@@ -751,52 +733,9 @@ abm init  # Uses environment variables
 ├── .abm.json                    # Global configuration
 └── projects/
     ├── my-feature/
-    │   ├── .abm                 # Project metadata (JSON)
-    │   └── PROJECT.md           # Notes and AI context (symlinked to worktree)
+    │   └── .abm                 # Project metadata (JSON)
     └── another-feature/
-        ├── .abm
-        └── PROJECT.md
-```
-
-### Documentation Files
-
-Each project has a `PROJECT.md` for branch-specific context. It lives in the project folder
-(so it survives worktree removal), is symlinked into the worktree for easy editing, and is
-available to AI assistants for project-specific context:
-
-```markdown
-# my-feature
-
-## Description
-Implement awesome feature
-
-## Branch
-`feature/awesome-improvement`
-
-## Ports
-- Webserver: 28081
-- Flower: 25556
-- Postgres: 25434
-- MySQL: 23307
-- Redis: 26380
-
-## What I'm Working On
-Adding a new execution model for deferred tasks that improves
-performance by 40% in high-throughput scenarios.
-
-## Key Files/Areas
-- `airflow/models/taskinstance.py` - Main task execution logic
-- `airflow/executors/celery_executor.py` - Celery integration
-- `tests/models/test_taskinstance.py` - Test coverage
-
-## Testing Strategy
-1. Unit tests for new defer() method
-2. Integration tests with Celery backend
-3. Performance benchmarks (see dev/benchmark_defer.py)
-
-## Notes & Decisions
-- Decided to use Redis for state tracking (not DB) for lower latency
-- Need to handle edge case where worker dies mid-defer
+        └── .abm
 ```
 
 ## Development Workflow
@@ -831,20 +770,10 @@ abm freeze feature-a  # Save space while waiting for review
 # Create project
 abm add my-feature --create-branch
 
-# Add context to PROJECT.md for AI assistants
+# Airflow's CLAUDE.md (-> AGENTS.md) and the main repo's .claude/ (symlinked
+# by ABM) are both in the worktree, so Claude Code picks them up there
 cd ~/code/airflow-worktree/my-feature
-cat >> PROJECT.md << 'EOF'
-## What I'm Working On
-Adding support for asset-based scheduling with dynamic dependencies.
-
-## Key Files
-- airflow/models/asset.py
-- airflow/dag_processing/dag_processor.py
-EOF
-
-# Airflow's own CLAUDE.md (-> AGENTS.md) provides architecture context
-# Your project's PROJECT.md provides feature-specific context
-abm shell my-feature
+claude
 ```
 
 ### Testing Multiple Branches
