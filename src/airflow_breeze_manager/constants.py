@@ -47,17 +47,11 @@ DEFAULT_PORTS = {
 # Project files managed by ABM
 PROJECT_FILES = {
     "metadata": ".abm",
-    "project_doc": "PROJECT.md",
 }
 
-# Symlinked files from project folder to worktree
-# These files are stored in the project folder but symlinked to the worktree
-# so they persist across worktree removal/recreation.
-# CLAUDE.md is deliberately not here: Airflow tracks it as a symlink to AGENTS.md,
-# so ABM's copy could never land in a worktree without clobbering the repo's file.
-SYMLINKED_FILES = [
-    "PROJECT.md",  # Project-specific notes and AI assistant context
-]
+# Files older ABM versions symlinked from the project folder into each worktree.
+# ABM no longer creates them; adopt, remove and disown delete any left behind.
+LEGACY_SYMLINKED_FILES = ["PROJECT.md"]
 
 # Directories from the main Airflow repo that are symlinked into each worktree.
 # These are gitignored in Airflow, so they won't appear in worktrees via git.

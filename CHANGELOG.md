@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- `PROJECT.md` is gone, along with `abm remove --keep-docs`. ABM no longer creates it or symlinks it into worktrees, where it showed up as an untracked file that `git add -A` could commit. `abm adopt`, `abm remove` and `abm disown` delete a `PROJECT.md` symlink an earlier version left in the worktree. Files already in `~/.airflow-breeze-manager/projects/` are not touched. Use `abm status` for a project's ports.
+
 ## [0.4.0] - 2026-09-20
 
 ### Fixed
